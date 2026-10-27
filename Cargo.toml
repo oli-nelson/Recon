@@ -1,0 +1,26 @@
+[package]
+name = "recon"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A live Git diff tree and observed edit history for the terminal"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+git2 = "0.20"
+globset = "0.4"
+notify = "8"
+ratatui = "0.29"
+similar = "2"
+
+[dev-dependencies]
+libc = "0.2"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true
