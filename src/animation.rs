@@ -85,22 +85,7 @@ pub fn relative_age(time: Option<std::time::SystemTime>, times: &[std::time::Sys
         1.0 - index as f64 / (times.len() - 1) as f64
     }
 }
-pub fn recency(age: f64, light: bool, muted: Color) -> Color {
-    let colors = if light {
-        [
-            Color::Rgb(0, 128, 124),
-            Color::Rgb(47, 103, 189),
-            Color::Rgb(158, 100, 32),
-            muted,
-        ]
-    } else {
-        [
-            Color::Rgb(94, 234, 212),
-            Color::Rgb(106, 173, 255),
-            Color::Rgb(242, 195, 107),
-            muted,
-        ]
-    };
+pub fn gradient(age: f64, colors: [Color; 4]) -> Color {
     let position = age.clamp(0.0, 1.0) * 3.0;
     let index = (position.floor() as usize).min(2);
     let amount = position - index as f64;
@@ -109,7 +94,7 @@ pub fn recency(age: f64, light: bool, muted: Color) -> Color {
             let blend = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * amount).round() as u8;
             Color::Rgb(blend(r, x), blend(g, y), blend(b, z))
         }
-        _ => muted,
+        _ => colors[3],
     }
 }
 

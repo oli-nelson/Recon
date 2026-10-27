@@ -1,6 +1,7 @@
 use crate::{
-    Config, Theme,
+    Config,
     animation::{self, FramePacer},
+    keybinds::Action,
     model::{Command, Model, Status},
     watch::Worker,
 };
@@ -285,13 +286,15 @@ pub fn run(config: &Config, worker: Worker) -> Result<()> {
             if event::poll(pacer.wait(Instant::now(), dirty || animation))? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        if handle_key(
-                            key,
-                            &mut model,
-                            &mut view,
-                            &worker.commands,
-                            terminal.size()?.height as usize,
-                        ) {
+                        let height = terminal.size()?.height as usize;
+                        let key = if view.searching || view.help {
+                            Some(key)
+                        } else {
+                            config.keybinds.resolve(key)
+                        };
+                        if key.is_some_and(|key| {
+                            handle_key(key, &mut model, &mut view, &worker.commands, height)
+                        }) {
                             break;
                         }
                         dirty = true;
@@ -370,7 +373,7 @@ fn handle_key(
     height: usize,
 ) -> bool {
     use KeyCode::*;
-    let page = height.saturating_sub(6).max(1);
+    let page = height.saturating_sub(5).max(1);
     if view.searching {
         match key.code {
             Esc => {
@@ -595,20 +598,13 @@ fn select(view: &mut View, row: &TreeRow) {
 }
 
 pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) {
-    let light = matches!(config.theme, Theme::Light);
+    let palette = config.theme.palette();
+    let light = matches!(config.theme, crate::Theme::Light);
     let duration = std::time::Duration::from_millis(config.animation_ms);
     let bg = Color::Reset;
-    let fg = if light {
-        Color::Rgb(35, 43, 60)
-    } else {
-        Color::Rgb(204, 214, 237)
-    };
-    let muted = if light {
-        Color::Rgb(100, 110, 128)
-    } else {
-        Color::Rgb(113, 128, 155)
-    };
-    let accent = Color::Rgb(106, 173, 255);
+    let fg = palette.foreground;
+    let muted = palette.muted;
+    let accent = palette.accent;
     let times: Vec<_> = model.modification_times.keys().copied().collect();
     frame.render_widget(
         Block::default().style(Style::default().bg(bg).fg(fg)),
@@ -619,7 +615,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         .constraints([
             Constraint::Length(2),
             Constraint::Min(1),
-            Constraint::Length(2),
+            Constraint::Length(1),
         ])
         .split(frame.area());
     let state = if model.refreshing {
@@ -646,56 +642,69 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             Status::Unchanged => 3,
         }] += 1;
     }
-    let positive = Color::Rgb(100, 210, 160);
-    let negative = Color::Rgb(235, 122, 139);
-    let gold = Color::Rgb(242, 195, 107);
+    let positive = palette.positive;
+    let negative = palette.negative;
+    let gold = palette.gold;
+    let compact = frame.area().width < 72;
+    let comparison = match (model.baseline.as_str(), compact) {
+        ("last clear", true) => "vs manual clear",
+        ("last clear", false) => "Comparing: manual clear point",
+        (_, true) => "vs HEAD",
+        (_, false) => "Comparing: Git snapshot (HEAD)",
+    };
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled(
-                    " ◈ RECON ",
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("  │ {indicator} {state}"),
-                    Style::default().fg(if model.refreshing { gold } else { positive }),
-                ),
-                Span::styled(
-                    format!("  │  {}", model.branch),
-                    Style::default().fg(accent),
-                ),
-                Span::styled(
-                    format!("  │  baseline {}", model.baseline),
-                    Style::default().fg(muted),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    format!("  +{} new  ", counts[0]),
-                    Style::default().fg(positive),
-                ),
-                Span::styled(
-                    format!("~{} modified  ", counts[1]),
-                    Style::default().fg(gold),
-                ),
-                Span::styled(
-                    format!("−{} deleted  ", counts[2]),
-                    Style::default().fg(negative),
-                ),
-                Span::styled(
-                    format!(
-                        "·{} historical  │  {} entries · {:.1} MiB  │  {} FPS cap",
-                        counts[3],
-                        model.entries.len(),
-                        model.bytes as f64 / 1048576.,
-                        config.fps
-                    ),
-                    Style::default().fg(muted),
-                ),
-            ]),
-        ]),
-        parts[0],
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " ◈ RECON │ ",
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                comparison,
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" │ {indicator} {state}"),
+                Style::default().fg(if model.refreshing { gold } else { positive }),
+            ),
+            Span::styled(format!(" │ {}", model.branch), Style::default().fg(muted)),
+        ])),
+        Rect::new(
+            parts[0].x,
+            parts[0].y,
+            parts[0].width,
+            parts[0].height.min(1),
+        ),
     );
+    let summary_row = Rect::new(
+        parts[0].x,
+        parts[0].y.saturating_add(1),
+        parts[0].width,
+        parts[0].height.saturating_sub(1),
+    );
+    let legend = age_legend(&palette, compact);
+    let summary = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(legend.width() as u16),
+    ])
+    .split(summary_row);
+    let mut stats = vec![
+        Span::styled(format!(" +{} ", counts[0]), Style::default().fg(positive)),
+        Span::styled(format!("~{} ", counts[1]), Style::default().fg(gold)),
+        Span::styled(format!("−{} ", counts[2]), Style::default().fg(negative)),
+        Span::styled(format!("·{}", counts[3]), Style::default().fg(muted)),
+    ];
+    if !compact {
+        stats.push(Span::styled(
+            format!(
+                " │ {} entries · {:.1} MiB",
+                model.entries.len(),
+                model.bytes as f64 / 1048576.
+            ),
+            Style::default().fg(muted),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(stats)), summary[0]);
+    frame.render_widget(Paragraph::new(legend), summary[1]);
     let narrow = parts[1].width < 72;
     let tree_visible = !view.sidebar || !narrow || !view.panel_focus;
     let panel_visible = view.sidebar && (!narrow || view.panel_focus);
@@ -744,8 +753,8 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                 } else {
                     let file = &model.files[&r.key];
                     let color = match file.status {
-                        Status::New => Color::Rgb(100, 210, 160),
-                        Status::Modified => Color::Rgb(242, 195, 107),
+                        Status::New => positive,
+                        Status::Modified => gold,
                         Status::Deleted | Status::Unchanged => muted,
                     };
                     let age = file.activity.elapsed();
@@ -787,11 +796,9 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                         Span::styled(format!(" {git_status:2} "), Style::default().fg(git_color)),
                         Span::styled(
                             "● ",
-                            Style::default().fg(animation::recency(
-                                animation::relative_age(file.modified_at, &times),
-                                light,
-                                muted,
-                            )),
+                            Style::default()
+                                .fg(palette
+                                    .recency(animation::relative_age(file.modified_at, &times))),
                         ),
                         Span::styled(
                             format!(
@@ -831,9 +838,9 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         if rows.is_empty() {
             frame.render_widget(
                 Paragraph::new(if view.search.is_empty() {
-                    "\n  No changes yet.\n  Edits will appear here."
+                    " No changes yet.\n Edits will appear here."
                 } else {
-                    "\n  No matching files.\n  Esc clears the search."
+                    " No matching files.\n Esc clears the search."
                 })
                 .style(Style::default().fg(muted)),
                 inset(tree_rect),
@@ -846,13 +853,13 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         } else {
             "Matching files"
         });
+        let paused = format!(
+            "PAUSED • {} to resume",
+            config.keybinds.label(Action::Follow)
+        );
         let title = format!(
             " History • {label} • {} {} ",
-            if view.following {
-                "LIVE"
-            } else {
-                "PAUSED • f to resume"
-            },
+            if view.following { "LIVE" } else { &paused },
             if view.unseen > 0 {
                 format!("• {} new", view.unseen)
             } else {
@@ -946,9 +953,9 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                 let from = view.scroll.saturating_sub(row).saturating_sub(1);
                 for (i, line) in entry.diff.lines().enumerate().skip(from).take(height + 1) {
                     let color = if line.starts_with('+') {
-                        Color::Rgb(100, 210, 160)
+                        positive
                     } else if line.starts_with('-') {
-                        Color::Rgb(235, 122, 139)
+                        negative
                     } else if line.starts_with("@@") {
                         accent
                     } else {
@@ -996,18 +1003,29 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         }
         if count == 0 {
             frame.render_widget(
-                Paragraph::new(
-                    "\n  Waiting for observed changes…\n\n  c clear baseline   g Git snapshot",
-                )
+                Paragraph::new(format!(
+                    " Waiting for observed changes…\n {} clear point   {} Git snapshot",
+                    config.keybinds.label(Action::Clear),
+                    config.keybinds.label(Action::GitSnapshot)
+                ))
                 .style(Style::default().fg(muted)),
                 inner,
             );
         }
     }
-    let footer = format!(
-        " / search  q quit  ? help  d panel  Tab focus  [ ] resize  c clear  g Git  Esc all  f live{}",
-        if narrow { " • Tab switches view" } else { "" }
-    );
+    let footer = [
+        (Action::Help, "help"),
+        (Action::Search, "search"),
+        (Action::Clear, "clear point"),
+        (Action::GitSnapshot, "Git snapshot"),
+        (Action::ToggleHistory, "panel"),
+        (Action::Focus, "focus"),
+        (Action::Quit, "quit"),
+    ]
+    .into_iter()
+    .map(|(a, text)| format!("{} {text}", config.keybinds.label(a)))
+    .collect::<Vec<_>>()
+    .join("  ");
     let status = format!(
         " {}{}{}",
         if let Some(warning) = &model.watch_status {
@@ -1028,42 +1046,155 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             String::new()
         }
     );
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(footer, Style::default().fg(muted)),
-            if view.searching || !view.search.is_empty() {
-                Line::from(vec![
-                    Span::styled(
-                        format!(" /{}{}", view.search, if view.searching { "▏" } else { "" }),
-                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        if view.searching {
-                            "  Enter keep · Esc cancel · Ctrl-U clear"
-                        } else {
-                            "  n/N next/previous · Esc clear filter"
-                        },
-                        Style::default().fg(muted),
-                    ),
-                ])
-            } else {
-                Line::styled(status, Style::default().fg(accent))
-            },
-        ]),
-        parts[2],
-    );
+    let searching = view.searching || !view.search.is_empty();
+    let show_status = !status.trim().is_empty();
+    let footer_line = if searching {
+        Line::from(vec![
+            Span::styled(
+                format!(" /{}{}", view.search, if view.searching { "▏" } else { "" }),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if view.searching {
+                    "  Enter keep · Esc cancel · Ctrl-U clear".to_string()
+                } else {
+                    format!(
+                        "  {}/{} next/previous · {} clear",
+                        config.keybinds.label(Action::NextMatch),
+                        config.keybinds.label(Action::PreviousMatch),
+                        config.keybinds.label(Action::AllHistory)
+                    )
+                },
+                Style::default().fg(muted),
+            ),
+        ])
+    } else if show_status {
+        Line::styled(status, Style::default().fg(accent))
+    } else {
+        Line::styled(footer, Style::default().fg(muted))
+    };
+    if searching || show_status {
+        let shortcuts = format!(
+            " {} help  {} quit",
+            config.keybinds.label(Action::Help),
+            config.keybinds.label(Action::Quit)
+        );
+        let columns = Layout::horizontal([
+            Constraint::Min(0),
+            Constraint::Length(shortcuts.chars().count() as u16),
+        ])
+        .split(parts[2]);
+        frame.render_widget(Paragraph::new(footer_line), columns[0]);
+        frame.render_widget(
+            Paragraph::new(shortcuts).style(Style::default().fg(muted)),
+            columns[1],
+        );
+    } else {
+        frame.render_widget(Paragraph::new(footer_line), parts[2]);
+    }
     if view.help {
         let area = frame.area();
         let popup = Rect::new(
             area.width.saturating_sub(66) / 2,
-            area.height.saturating_sub(24) / 2,
+            area.height.saturating_sub(21) / 2,
             area.width.min(66),
-            area.height.min(24),
+            area.height.min(21),
         );
         frame.render_widget(Clear, popup);
-        frame.render_widget(Paragraph::new("\n /  Search file paths; Enter keep, Esc cancel\n c  Clear history; use current contents as baseline\n g  Fresh snapshot against HEAD\n d  Hide/show panel (history continues)\n Tab  Switch focus / narrow-terminal view\n j/k or arrows  Navigate files / scroll history\n h/l or arrows  Collapse/expand directories\n [ / ] or drag divider  Resize sidebar horizontally\n Enter  Open/focus file history; fold history entries\n Ctrl-D / Ctrl-U  Half-page down/up in sidebar\n PageUp/PageDown  Full-page down/up\n f  Toggle live following\n Esc  All-file history\n ?  Help     q  Quit\n\n ● relative mtime: cyan → blue → amber → muted\n Git status: index/worktree; ?? untracked\n Recon never writes to your repository.").block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Recon • keyboard ")).style(Style::default().bg(bg).fg(fg)), popup);
+        let groups: &[(&[Action], &str)] = &[
+            (&[Action::Search], "Search file paths"),
+            (
+                &[Action::Clear],
+                "Clear history; compare from current contents",
+            ),
+            (&[Action::GitSnapshot], "Fresh Git snapshot against HEAD"),
+            (&[Action::ToggleHistory], "Hide/show history"),
+            (&[Action::Focus], "Switch focus / narrow-terminal view"),
+            (&[Action::Down, Action::Up], "Navigate / scroll down/up"),
+            (
+                &[Action::Collapse, Action::Expand],
+                "Collapse/expand directory",
+            ),
+            (
+                &[Action::WidenHistory, Action::NarrowHistory],
+                "Widen/narrow history",
+            ),
+            (&[Action::Open], "Open file history / toggle fold"),
+            (
+                &[Action::NextMatch, Action::PreviousMatch],
+                "Next/previous search result",
+            ),
+            (&[Action::PageDown, Action::PageUp], "Page down/up"),
+            (
+                &[Action::HalfPageDown, Action::HalfPageUp],
+                "Half-page down/up",
+            ),
+            (&[Action::Follow], "Toggle live following"),
+            (&[Action::AllHistory], "Clear search; all-file history"),
+            (
+                &[Action::Help, Action::Quit],
+                "Help (any key closes) / quit",
+            ),
+        ];
+        let mut lines: Vec<Line> = groups
+            .iter()
+            .map(|(actions, description)| {
+                let keys = actions
+                    .iter()
+                    .map(|&a| config.keybinds.label(a))
+                    .collect::<Vec<_>>()
+                    .join(" / ");
+                Line::from(format!(" {keys}  {description}"))
+            })
+            .collect();
+        lines.push(Line::from(
+            " Search input: Enter keep · Esc cancel · Ctrl-U clear",
+        ));
+        lines.push(age_legend(&palette, false));
+        lines.push(Line::from(" Age ranks file mtimes; not elapsed time."));
+        lines.push(Line::from(
+            " Git: index/worktree; ?? untracked. Drag divider to resize.",
+        ));
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .title(" Recon • keyboard "),
+                )
+                .style(Style::default().bg(bg).fg(fg)),
+            popup,
+        );
     }
 }
+fn age_legend(palette: &crate::theme::Palette, compact: bool) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        if compact {
+            " Age: new "
+        } else {
+            " Age: newest "
+        },
+        Style::default().fg(palette.muted),
+    )];
+    let steps = if compact { 4 } else { 12 };
+    spans.extend((0..=steps).map(|step| {
+        Span::styled(
+            "●",
+            Style::default().fg(palette.recency(step as f64 / steps as f64)),
+        )
+    }));
+    spans.push(Span::styled(
+        if compact {
+            " old "
+        } else {
+            " oldest (relative mtime) "
+        },
+        Style::default().fg(palette.muted),
+    ));
+    Line::from(spans)
+}
+
 fn inset(r: Rect) -> Rect {
     Rect::new(
         r.x.saturating_add(1),
@@ -1089,6 +1220,108 @@ mod tests {
                 v.panel_focus = panel;
                 term.draw(|f| draw(f, &m, &mut v, &config)).unwrap();
             }
+        }
+    }
+    #[test]
+    fn themes_show_matching_age_legend_baseline_and_configured_hints() {
+        for theme in ["dark", "light", "ashen"] {
+            let mut config = Config::parse_from(["recon", "--theme", theme, "--no-animations"]);
+            config.keybinds = crate::keybinds::Keybinds::with_overrides(BTreeMap::from([
+                (Action::Clear, vec!["Alt-c".into()]),
+                (Action::Quit, vec!["Ctrl-x".into()]),
+            ]))
+            .unwrap();
+            let mut model = Model::new(100, 4096);
+            let mut view = View::new();
+            let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+            for baseline in ["HEAD", "last clear"] {
+                model.baseline = baseline.into();
+                terminal
+                    .draw(|f| draw(f, &model, &mut view, &config))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let text: String = buffer.content.iter().map(|c| c.symbol()).collect();
+                assert!(text.contains(if baseline == "HEAD" {
+                    "Comparing: Git snapshot (HEAD)"
+                } else {
+                    "Comparing: manual clear point"
+                }));
+                assert!(!text.contains("FPS"));
+                assert!(text.contains("Alt-c clear point"));
+                assert!(text.contains("Ctrl-x quit"));
+                let dots: Vec<_> = buffer
+                    .content
+                    .chunks(100)
+                    .nth(1)
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c.symbol() == "●")
+                    .collect();
+                assert_eq!(dots.len(), 13);
+                for (step, dot) in dots.iter().enumerate() {
+                    assert_eq!(dot.fg, config.theme.palette().recency(step as f64 / 12.));
+                }
+            }
+            view.help = true;
+            terminal
+                .draw(|f| draw(f, &model, &mut view, &config))
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(text.contains("Alt-c  Clear history"));
+            assert!(text.contains("Ctrl-x  Help")); // grouped Help / Quit label
+        }
+    }
+    #[test]
+    fn compact_chrome_keeps_content_and_status_visible_in_short_terminals() {
+        let config = Config::parse_from(["recon", "--no-animations"]);
+        let mut model = history_model();
+        model.refreshing = false;
+        model.baseline = "last clear".into();
+        model.watch_status = Some("Watcher unavailable; recovering".into());
+        for (width, height) in [(36, 12), (100, 12), (100, 24)] {
+            let mut view = View::new();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|f| draw(f, &model, &mut view, &config))
+                .unwrap();
+            let rows: Vec<String> = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(width as usize)
+                .map(|row| row.iter().map(|c| c.symbol()).collect())
+                .collect();
+            assert_eq!(view.split_area.y, 2);
+            assert_eq!(view.split_area.height, height - 3);
+            assert!(rows[0].contains("manual clear"));
+            assert!(rows[1].contains(if width < 72 { "old" } else { "oldest" }));
+            assert!(rows[4].contains("file0.rs"));
+            assert!(rows[height as usize - 1].contains("Watcher"));
+            assert!(rows[height as usize - 1].contains("q quit"));
+            view.searching = true;
+            view.search = "file".into();
+            terminal
+                .draw(|f| draw(f, &model, &mut view, &config))
+                .unwrap();
+            let footer: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(width as usize)
+                .last()
+                .unwrap()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(footer.contains("/file"));
+            assert!(footer.contains("q quit"));
+            assert_eq!(view.split_area.height, height - 3);
         }
     }
     fn history_model() -> Model {
@@ -1320,11 +1553,11 @@ mod tests {
         view.scroll = 14;
         let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
         handle_key(ctrl('u'), &mut model, &mut view, &tx, 24);
-        assert_eq!(view.scroll, 5);
+        assert_eq!(view.scroll, 4);
         assert!(!view.following);
         assert!(view.sidebar);
         handle_key(ctrl('d'), &mut model, &mut view, &tx, 24);
-        assert_eq!(view.scroll, 14);
+        assert_eq!(view.scroll, 13); // clamp to the last full page
         assert!(view.sidebar);
         handle_key(KeyCode::Char('f').into(), &mut model, &mut view, &tx, 24);
         assert!(view.following);

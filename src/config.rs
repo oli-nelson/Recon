@@ -14,6 +14,7 @@ pub const DEFAULT_CONFIG: &str = include_str!("../config.default.toml");
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
+    keybinds: Option<std::collections::BTreeMap<crate::keybinds::Action, Vec<String>>>,
     fps: Option<u16>,
     theme: Option<Theme>,
     reduced_motion: Option<bool>,
@@ -72,6 +73,10 @@ impl Config {
             if let Some(ignore) = settings.ignore {
                 config.ignores = ignore;
             }
+        }
+        if let Some(bindings) = settings.keybinds {
+            config.keybinds = crate::keybinds::Keybinds::with_overrides(bindings)
+                .with_context(|| format!("Invalid keybinds in {}", path.display()))?;
         }
         config.config = Some(path.to_path_buf());
         config
@@ -241,6 +246,36 @@ mod tests {
             fs::write(&path, text).unwrap();
             assert!(load(&path, &["recon"]).is_err(), "{text}");
             assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
+    }
+    #[test]
+    fn themes_and_partial_keybinds_load_and_reject_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "theme = \"ashen\"\n[keybinds]\nquit = [\"Ctrl-x\"]\n",
+        )
+        .unwrap();
+        let config = load(&path, &["recon"]).unwrap();
+        assert!(matches!(config.theme, Theme::Ashen));
+        assert_eq!(
+            config.keybinds.label(crate::keybinds::Action::Quit),
+            "Ctrl-x"
+        );
+        assert_eq!(config.keybinds.label(crate::keybinds::Action::Clear), "c");
+        assert!(matches!(
+            load(&path, &["recon", "--theme", "light"]).unwrap().theme,
+            Theme::Light
+        ));
+        for input in [
+            "[keybinds]\nquit = [\"c\"]",
+            "[keybinds]\nquitt = [\"x\"]",
+            "[keybinds]\nquit = [\"Ctr-x\"]",
+        ] {
+            fs::write(&path, input).unwrap();
+            let error = load(&path, &["recon"]).unwrap_err();
+            assert!(format!("{error:#}").contains(path.to_str().unwrap()));
         }
     }
     #[test]

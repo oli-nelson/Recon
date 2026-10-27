@@ -3,7 +3,7 @@
 
 # Rendering: 1–240 FPS cap; frames are emitted only while something changes.
 fps = 60
-theme = "dark" # "dark" or "light"; background stays transparent
+theme = "dark" # original default; also "light" or "ashen"; transparent background
 reduced_motion = false
 no_animations = false
 animation_ms = 800 # 200–2000; spring entrance duration
@@ -22,3 +22,30 @@ snapshot_bytes = 268435456
 # Watcher coalescing and missed-event recovery.
 debounce_ms = 75
 reconcile_seconds = 30
+
+# Keys replace the defaults for that action; [] disables an action.
+# Use one character (case-sensitive), named keys, or Ctrl-/Alt-/Shift- prefixes.
+# Duplicate bindings are errors. Search input keeps Enter/Esc/Backspace/Ctrl-U.
+[keybinds]
+quit = ["q"]
+clear = ["c"]
+git_snapshot = ["g"]
+search = ["/"]
+next_match = ["n"]
+previous_match = ["N"]
+widen_history = ["["]
+narrow_history = ["]"]
+down = ["j", "Down"]
+up = ["k", "Up"]
+collapse = ["h", "Left"]
+expand = ["l", "Right"]
+focus = ["Tab"]
+toggle_history = ["d"]
+open = ["Enter"]
+page_down = ["PageDown"]
+page_up = ["PageUp"]
+half_page_down = ["Ctrl-d"]
+half_page_up = ["Ctrl-u"]
+follow = ["f"]
+all_history = ["Esc"]
+help = ["?"]

@@ -38,15 +38,20 @@ unstaged, and nonignored untracked files, comparing final working contents.
 | `Esc` | Show aggregate history |
 | `?` / `q` | Help / quit |
 
-The header shows the current branch (or detached HEAD / unborn branch) and updates
+The header labels the active comparison as **Git snapshot (HEAD)** or **manual clear
+point (contents at last clear)**, and shows a coloured newest-to-oldest age-dot
+legend. A two-row header and one-row footer leave the remaining height for files
+and history; narrow terminals use shorter labels. Progress, warnings, and search
+share the footer with help/quit hints. It also shows the current branch (or detached HEAD / unborn branch) and updates
 on branch switches, including switches between branches at the same commit.
 
 Tree symbols: `+` new, `~` modified, `−` deleted tombstone, `·` no net change.
 These describe the active baseline. `XY` independently describes the Git index
 and working tree, with `??` for untracked files. Git letters occupy a fixed left
 column, independent of indentation and motion. A small `●` beside each file
-shows relative modification-time recency: newest timestamps are cyan, progressing
-through blue and amber to muted for the oldest. Equal timestamps get equal colors.
+shows relative modification-time recency using the gradient shown in the header.
+The original theme runs from cyan through blue and amber to muted for the oldest;
+Ashen runs from warm orange through gold and teal to muted. Equal timestamps get equal colors.
 The scale ranks all affected tree files and updates on observed filesystem changes;
 it does not fade with wall time or shift when searching. Initial snapshots use
 filesystem modification times. Staging alone preserves their age. Metadata-only touches may change
@@ -80,7 +85,7 @@ notice. Staging alone updates Git status without adding a content edit.
   history gap; only observed endpoints are compared. `--reconcile-seconds`
   controls the safety interval. Inaccessible files retain their last observation
   and retry on reconciliation.
-- Transparent terminal background with dark/light foreground palettes. Rounded
+- Transparent terminal background with dark (original default), light, and Ashen palettes. Rounded
   panels, connected history entries, clipped spring entrances with a bounded
   overshoot, eased exits, fading activity
   highlights, and a refresh spinner.
@@ -90,7 +95,8 @@ notice. Staging alone updates Git status without adding a content edit.
   operation does not redraw. Both panes retain their chosen width across toggles
   and terminal resizes. Narrow layouts keep the stored ratio for later.
 - `--reduced-motion` retains brief bold activity emphasis; `--no-animations`
-  removes it. `--theme light` changes the foreground palette.
+  removes it. `--theme light` or `--theme ashen` changes the palette. Ashen uses warm ember
+  accents and greys inspired by the Ashen Neovim theme.
 
 A single background worker owns Git and diff computation. Bounded notification,
 command, and result channels prevent work from accumulating indefinitely. Normal
@@ -150,6 +156,27 @@ sidebar_width = 68
 theme = "dark"
 ignore = ["generated/**"]
 ```
+
+Keybinds can be replaced individually in a `[keybinds]` table. Help, footer hints,
+and empty-history hints display your configured keys. Omitted actions keep their
+defaults; an empty list disables an action. Duplicate keys across actions fail
+with an error (unbind or move the other action when reusing its key).
+
+```toml
+theme = "ashen" # "dark" is the original default; "light" also supported
+
+[keybinds]
+quit = ["Ctrl-x"]
+down = ["j", "Down"]
+clear = ["Alt-c"]
+```
+
+Keys accept single case-sensitive characters, `Space`, `Enter`, `Esc`, `Tab`,
+`BackTab`, arrows, `PageUp`, `PageDown`, `Home`, `End`, `Backspace`, `Delete`,
+`Insert`, and `F1`–`F24`, with optional `Ctrl-`, `Alt-`, or `Shift-` prefixes. Prefer uppercase
+characters for shifted letters. While entering a search, printable characters
+edit the query and Enter/Esc/Backspace/Ctrl-U keep their editing functions.
+Any key closes help. The complete action list is in the default config.
 
 Boolean CLI flags can override either direction:
 `--no-animations` enables that option, while `--no-animations=false` overrides a

@@ -6,6 +6,7 @@ import os
 import pathlib
 import pty
 import select
+import signal
 import struct
 import subprocess
 import tempfile
@@ -22,9 +23,11 @@ with tempfile.TemporaryDirectory(prefix='recon-ui-') as folder:
     if args.large:
         for i in range(10000):
             pathlib.Path(folder,f'file{i:05}.txt').write_text('fixture content\n' * 6)
+    config = pathlib.Path(folder, 'recon.toml')
+    config.write_text('theme = "ashen"\n[keybinds]\nclear = ["x"]\ngit_snapshot = ["v"]\nquit = ["Ctrl-x"]\n')
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
-    process = subprocess.Popen([str(root / 'target/release/recon'), folder, '--no-animations'], stdin=slave, stdout=slave, stderr=slave, env={**os.environ, 'TERM':'xterm-256color'})
+    process = subprocess.Popen([str(root / 'target/release/recon'), folder, '--no-animations', '--config', str(config)], stdin=slave, stdout=slave, stderr=slave, env={**os.environ, 'TERM':'xterm-256color'})
     os.close(slave)
     output = bytearray()
     def collect(seconds=0.15):
@@ -44,6 +47,10 @@ with tempfile.TemporaryDirectory(prefix='recon-ui-') as folder:
         while b'RECON' not in output and time.monotonic() < startup_deadline:
             collect(0.005)
         assert b'RECON' in output, output[-3000:]
+        assert b'FPS' not in output, 'FPS label still visible'
+        assert b'Comparing: Git snapshot (HEAD)' in output
+        assert b'Age: newest' in output and b'oldest' in output
+        assert b'Ctrl-x quit' in output
         assert b'Opening Git snapshot' not in output, 'startup progress leaked into settled footer'
         if args.large:
             assert b'REFRESHING' in output, 'expected an active startup refresh'
@@ -59,27 +66,46 @@ with tempfile.TemporaryDirectory(prefix='recon-ui-') as folder:
             os.write(master,b'?')
             collect(0.15)
         else:
+            while b'hello.txt' not in output and time.monotonic() < startup_deadline:
+                collect(0.01)
             assert b'hello.txt' in output, output[-3000:]
         for key in [b'j', b'\r', b'\x04', b'\x15', b'\t', b'[', b']', b'\x1b[<0;33;6M', b'\x1b[<32;50;6M', b'\x1b[<0;50;6m', b'/hello', b'\x7f', b'o', b'\r', b'n', b'N', b'\x1b', b'd', b'j', b'd', b'\t', b'\x1b[5~', b'\x04', b'\x15', b'f', b'f', b'\r', b'?', b'?', b'\x1b']:
             os.write(master,key)
             collect()
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 12, 36, 0, 0))
+        os.kill(process.pid, signal.SIGWINCH)
         collect()
         os.write(master,b'\t')
         collect()
+        # The original binding no longer clears; the replacement does.
+        output.clear()
         os.write(master,b'c')
+        collect()
+        assert b'manual clear point' not in output
+        os.write(master,b'x')
         collect(0.3)
+        # Resize forces a complete frame; incremental frames can split labels
+        # around unchanged cells with cursor-position sequences.
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
+        os.kill(process.pid, signal.SIGWINCH)
+        collect()
+        assert b'manual clear point' in output, output[-3000:]
         pathlib.Path(folder,'hello.txt').write_text('after clear\n')
         collect(0.4)
-        os.write(master,b'g')
+        output.clear()
+        os.write(master,b'v')
         collect(0.3)
-        os.write(master,b'q')
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 101, 0, 0))
+        os.kill(process.pid, signal.SIGWINCH)
+        collect()
+        assert b'Git snapshot (HEAD)' in output, output[-3000:]
+        os.write(master,b'\x18')
         collect(0.3)
         assert process.wait(timeout=5) == 0, output[-3000:]
         assert b'\x1b[?2026h' in output and b'\x1b[?2026l' in output, 'synchronized frames missing'
         assert b'panic' not in output.lower(), output[-3000:]
         assert b'\x1b[?1049l' in output, 'alternate screen was not restored'
-        print('PASS real terminal: search, match navigation, mouse/keyboard divider resize, sidebar, focus, scroll, help, terminal resize, clear, reset, quit, synchronized frames, terminal restoration')
+        print('PASS real terminal: search, match navigation, mouse/keyboard divider resize, sidebar, focus, scroll, help, terminal resize, remapped clear/reset/quit, Ashen, age legend, comparison status, synchronized frames, terminal restoration')
     finally:
         if process.poll() is None:
             process.terminate()

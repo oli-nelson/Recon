@@ -1,8 +1,10 @@
 pub mod animation;
 pub mod config;
 pub mod engine;
+pub mod keybinds;
 pub mod model;
 pub mod repository;
+pub mod theme;
 pub mod ui;
 pub mod watch;
 
@@ -54,6 +56,8 @@ pub struct Config {
     pub no_animations: bool,
     #[arg(long, value_enum, default_value_t = Theme::Dark)]
     pub theme: Theme,
+    #[arg(skip)]
+    pub keybinds: keybinds::Keybinds,
     /// Print one snapshot and exit, without a terminal UI
     #[arg(long)]
     pub once: bool,
@@ -62,6 +66,9 @@ pub struct Config {
 #[derive(clap::ValueEnum, serde::Deserialize, Debug, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
+    #[value(alias = "default")]
+    #[serde(alias = "default")]
     Dark,
     Light,
+    Ashen,
 }
