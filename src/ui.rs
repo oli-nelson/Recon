@@ -365,11 +365,7 @@ fn select(view: &mut View, row: &TreeRow) {
 
 pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) {
     let light = matches!(config.theme, Theme::Light);
-    let bg = if light {
-        Color::Rgb(244, 246, 250)
-    } else {
-        Color::Rgb(15, 18, 27)
-    };
+    let bg = Color::Reset;
     let fg = if light {
         Color::Rgb(35, 43, 60)
     } else {
@@ -494,11 +490,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             .border_style(Style::default().fg(if !view.panel_focus { accent } else { muted }));
         let list = List::new(items)
             .block(block)
-            .highlight_style(Style::default().bg(if light {
-                Color::Rgb(213, 226, 245)
-            } else {
-                Color::Rgb(34, 46, 68)
-            }));
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
         let mut state = ListState::default()
             .with_offset(view.tree_offset)
             .with_selected(selected);
