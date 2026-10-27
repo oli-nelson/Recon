@@ -1,9 +1,8 @@
 use anyhow::Result;
-use clap::Parser;
 use recon::{Config, engine::Engine, model::Model, ui, watch::Worker};
 
 fn main() -> Result<()> {
-    let config = Config::parse();
+    let config = Config::load()?;
     if config.once {
         let mut engine = Engine::new(&config)?;
         let mut model = Model::new(
@@ -12,7 +11,8 @@ fn main() -> Result<()> {
         );
         engine.reset(false, "Opening snapshot", &mut |u| model.apply(u))?;
         println!(
-            "RECON • baseline {} • {} files",
+            "RECON • branch {} • baseline {} • {} files",
+            model.branch,
             model.baseline,
             model.files.len()
         );
@@ -25,7 +25,7 @@ fn main() -> Result<()> {
                 row.note
             );
         }
-        for entry in &model.entries {
+        for entry in model.entries.iter().rev() {
             println!("\n{} • {}\n{}", entry.path, entry.activity, entry.diff);
         }
         if model.evicted > 0 {

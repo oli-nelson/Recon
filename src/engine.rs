@@ -16,6 +16,7 @@ pub struct Engine {
     observed: BTreeMap<String, Content>,
     statuses: BTreeMap<String, String>,
     head: Option<git2::Oid>,
+    branch: String,
     next_id: u64,
     budget: usize,
     used: usize,
@@ -24,12 +25,14 @@ impl Engine {
     pub fn new(config: &Config) -> Result<Self> {
         let repo = Repo::discover(&config.path, &config.ignores, config.max_text_bytes)?;
         let head = repo.head()?;
+        let branch = repo.branch()?;
         Ok(Self {
             repo,
             baseline: None,
             observed: BTreeMap::new(),
             statuses: BTreeMap::new(),
             head,
+            branch,
             next_id: 1,
             budget: config.snapshot_bytes as usize,
             used: 0,
@@ -43,6 +46,7 @@ impl Engine {
     ) -> Result<()> {
         // Capture before replacing state: a failed clear must leave the old baseline intact.
         let head = self.repo.head()?;
+        let branch = self.repo.branch()?;
         let statuses = self.repo.statuses(None)?;
         let mut captured = None;
         let mut captured_bytes = 0;
@@ -81,10 +85,12 @@ impl Engine {
         self.baseline = captured;
         self.used = captured_bytes;
         self.head = head;
+        self.branch = branch.clone();
         self.statuses = statuses;
         emit(Update::Reset {
             baseline: if clear { "last clear" } else { "HEAD" }.into(),
             reason: reason.into(),
+            branch,
         });
         if clear {
             emit(Update::Notice(
@@ -116,7 +122,7 @@ impl Engine {
         gap: bool,
         emit: &mut impl FnMut(Update),
     ) -> Result<()> {
-        if self.repo.head()? != self.head {
+        if self.repo.head()? != self.head || self.repo.branch()? != self.branch {
             self.repo.submodules = self
                 .repo
                 .git
@@ -284,6 +290,10 @@ impl Engine {
                 FileRow {
                     path: path.clone(),
                     status,
+                    remove_from_tree: current.kind == Kind::Missing && git == "  ",
+                    modified_at: current
+                        .modified_at
+                        .or_else(|| (current.kind == Kind::Missing).then(SystemTime::now)),
                     git,
                     note,
                     activity,

@@ -44,6 +44,7 @@ with tempfile.TemporaryDirectory(prefix='recon-ui-') as folder:
         while b'RECON' not in output and time.monotonic() < startup_deadline:
             collect(0.005)
         assert b'RECON' in output, output[-3000:]
+        assert b'Opening Git snapshot' not in output, 'startup progress leaked into settled footer'
         if args.large:
             assert b'REFRESHING' in output, 'expected an active startup refresh'
             output.clear()
@@ -59,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix='recon-ui-') as folder:
             collect(0.15)
         else:
             assert b'hello.txt' in output, output[-3000:]
-        for key in [b'j', b'd', b'j', b'd', b'\t', b'\x1b[5~', b'\x1b[F', b'\r', b'?', b'?', b'\x1b']:
+        for key in [b'j', b'\r', b'\x04', b'\x15', b'\t', b'[', b']', b'\x1b[<0;33;6M', b'\x1b[<32;50;6M', b'\x1b[<0;50;6m', b'/hello', b'\x7f', b'o', b'\r', b'n', b'N', b'\x1b', b'd', b'j', b'd', b'\t', b'\x1b[5~', b'\x04', b'\x15', b'f', b'f', b'\r', b'?', b'?', b'\x1b']:
             os.write(master,key)
             collect()
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 12, 36, 0, 0))
@@ -75,9 +76,10 @@ with tempfile.TemporaryDirectory(prefix='recon-ui-') as folder:
         os.write(master,b'q')
         collect(0.3)
         assert process.wait(timeout=5) == 0, output[-3000:]
+        assert b'\x1b[?2026h' in output and b'\x1b[?2026l' in output, 'synchronized frames missing'
         assert b'panic' not in output.lower(), output[-3000:]
         assert b'\x1b[?1049l' in output, 'alternate screen was not restored'
-        print('PASS real terminal: navigation, sidebar, focus, scroll, help, resize, clear, reset, quit, terminal restoration')
+        print('PASS real terminal: search, match navigation, mouse/keyboard divider resize, sidebar, focus, scroll, help, terminal resize, clear, reset, quit, synchronized frames, terminal restoration')
     finally:
         if process.poll() is None:
             process.terminate()

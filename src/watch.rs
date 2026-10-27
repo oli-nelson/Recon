@@ -97,7 +97,7 @@ fn run(mut engine: Engine, config: Config, commands: Receiver<Command>, tx: Sync
             disconnected = true;
         }
     };
-    if let Err(e) = engine.reset(false, "Opening Git snapshot", &mut emit) {
+    if let Err(e) = engine.reset(false, "", &mut emit) {
         let _ = tx.send(Update::Notice(format!("Snapshot failed: {e:#}")));
         let _ = tx.send(Update::Done);
     }

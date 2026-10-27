@@ -1,3 +1,5 @@
+pub mod animation;
+pub mod config;
 pub mod engine;
 pub mod model;
 pub mod repository;
@@ -34,9 +36,21 @@ pub struct Config {
     /// Safety reconciliation interval (seconds)
     #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
     pub reconcile_seconds: u64,
+    /// Maximum render rate while active; idle frames are not rendered
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u16).range(1..=240))]
+    pub fps: u16,
+    /// Initial history sidebar width, as a percentage
+    #[arg(long, default_value_t = 68, value_parser = clap::value_parser!(u16).range(20..=85))]
+    pub sidebar_width: u16,
+    /// Duration of a row entrance, in milliseconds
+    #[arg(long, default_value_t = 800, value_parser = clap::value_parser!(u64).range(200..=2000))]
+    pub animation_ms: u64,
+    /// Read configuration from this file instead of the platform default
     #[arg(long)]
+    pub config: Option<PathBuf>,
+    #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     pub reduced_motion: bool,
-    #[arg(long)]
+    #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value = "false")]
     pub no_animations: bool,
     #[arg(long, value_enum, default_value_t = Theme::Dark)]
     pub theme: Theme,
@@ -45,7 +59,8 @@ pub struct Config {
     pub once: bool,
 }
 
-#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+#[derive(clap::ValueEnum, serde::Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
 pub enum Theme {
     Dark,
     Light,

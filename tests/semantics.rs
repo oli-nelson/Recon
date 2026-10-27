@@ -301,3 +301,102 @@ fn embedded_repositories_are_opaque() {
     .unwrap();
     assert_eq!(m.entries.len(), entries);
 }
+
+#[test]
+fn deleted_untracked_files_leave_the_tree_but_keep_history() {
+    for clear in [false, true] {
+        let d = fixture();
+        let path = d.path().join("temporary.txt");
+        fs::write(&path, "initial\n").unwrap();
+        let (mut e, mut m) = setup(&d);
+        reset(&mut e, &mut m, clear);
+        fs::write(&path, "edited\n").unwrap();
+        refresh(&mut e, &mut m);
+        assert!(m.files.contains_key("temporary.txt"));
+        fs::remove_file(&path).unwrap();
+        refresh(&mut e, &mut m);
+        assert!(!m.files.contains_key("temporary.txt"));
+        assert!(
+            m.entries
+                .iter()
+                .any(|entry| entry.path == "temporary.txt" && entry.activity == "deleted")
+        );
+        refresh(&mut e, &mut m);
+        assert!(!m.files.contains_key("temporary.txt"));
+        fs::write(&path, "recreated\n").unwrap();
+        refresh(&mut e, &mut m);
+        assert!(m.files.contains_key("temporary.txt"));
+        assert!(m.entries.back().unwrap().diff.contains("+recreated"));
+    }
+}
+
+#[test]
+fn recency_ranks_filesystem_mtimes_without_inventing_edit_history() {
+    let d = fixture();
+    let a = d.path().join("a.txt");
+    let b = d.path().join("b.txt");
+    let first = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let second = first + Duration::from_secs(60);
+    let newest = second + Duration::from_secs(60);
+    let stamp = |path: &Path, time| {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap()
+    };
+    fs::write(&a, "a changed\n").unwrap();
+    stamp(&a, first);
+    fs::write(&b, "b\n").unwrap();
+    stamp(&b, second);
+    let (mut e, mut m) = setup(&d);
+    reset(&mut e, &mut m, false);
+    let age = |m: &Model, path: &str| {
+        let times: Vec<_> = m.modification_times.keys().copied().collect();
+        recon::animation::relative_age(m.files[path].modified_at, &times)
+    };
+    assert_eq!(age(&m, "a.txt"), 1.0);
+    assert_eq!(age(&m, "b.txt"), 0.0);
+    let activity = m.files["a.txt"].activity;
+    let entries = m.entries.len();
+    stamp(&a, newest);
+    refresh(&mut e, &mut m); // Metadata-only notifications do not invent edits.
+    git(d.path(), &["add", "a.txt"]);
+    refresh(&mut e, &mut m);
+    assert_eq!(m.entries.len(), entries);
+    assert_eq!(m.files["a.txt"].activity, activity);
+    assert_eq!(age(&m, "a.txt"), 0.0);
+    fs::write(&a, "newest\n").unwrap();
+    stamp(&a, newest);
+    refresh(&mut e, &mut m);
+    assert_eq!(age(&m, "a.txt"), 0.0);
+    assert_eq!(age(&m, "b.txt"), 1.0);
+    fs::write(&b, "tie\n").unwrap();
+    stamp(&b, newest);
+    refresh(&mut e, &mut m);
+    assert_eq!(m.modification_times.len(), 1);
+    assert_eq!(m.modification_times[&newest], 2);
+    assert_eq!(age(&m, "a.txt"), age(&m, "b.txt"));
+}
+
+#[test]
+fn branch_labels_refresh_even_when_switching_to_the_same_commit() {
+    let d = fixture();
+    let (mut e, mut m) = setup(&d);
+    reset(&mut e, &mut m, false);
+    let original = m.branch.clone();
+    assert!(!original.contains("unborn"));
+    git(d.path(), &["checkout", "-qb", "same-commit"]);
+    refresh(&mut e, &mut m);
+    assert_eq!(m.branch, "same-commit");
+    assert!(m.message.contains("HEAD changed"));
+    git(d.path(), &["checkout", "--detach", "-q"]);
+    refresh(&mut e, &mut m);
+    assert!(m.branch.starts_with("detached "));
+    let empty = tempfile::tempdir().unwrap();
+    git(empty.path(), &["init", "-q"]);
+    let (mut e, mut m) = setup(&empty);
+    reset(&mut e, &mut m, false);
+    assert!(m.branch.ends_with("(unborn)"));
+}

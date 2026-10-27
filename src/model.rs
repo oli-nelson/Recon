@@ -28,6 +28,8 @@ pub struct FileRow {
     pub git: String,
     pub note: String,
     pub activity: Instant,
+    pub remove_from_tree: bool,
+    pub modified_at: Option<SystemTime>,
 }
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -46,7 +48,11 @@ impl Entry {
 }
 #[derive(Debug)]
 pub enum Update {
-    Reset { baseline: String, reason: String },
+    Reset {
+        baseline: String,
+        reason: String,
+        branch: String,
+    },
     Files(Vec<(FileRow, Option<Entry>)>),
     Progress(String),
     Notice(String),
@@ -65,8 +71,10 @@ pub struct Model {
     pub files: BTreeMap<String, FileRow>,
     pub entries: VecDeque<Entry>,
     pub bytes: usize,
+    pub modification_times: BTreeMap<SystemTime, usize>,
     pub evicted: usize,
     pub baseline: String,
+    pub branch: String,
     pub message: String,
     pub refreshing: bool,
     pub notice: String,
@@ -80,8 +88,10 @@ impl Model {
             files: BTreeMap::new(),
             entries: VecDeque::new(),
             bytes: 0,
+            modification_times: BTreeMap::new(),
             evicted: 0,
             baseline: "HEAD".into(),
+            branch: "…".into(),
             message: "Reading repository…".into(),
             refreshing: true,
             notice: String::new(),
@@ -92,10 +102,16 @@ impl Model {
     }
     pub fn apply(&mut self, update: Update) {
         match update {
-            Update::Reset { baseline, reason } => {
+            Update::Reset {
+                baseline,
+                reason,
+                branch,
+            } => {
+                self.branch = branch;
                 self.files.clear();
                 self.entries.clear();
                 self.bytes = 0;
+                self.modification_times.clear();
                 self.evicted = 0;
                 self.baseline = baseline;
                 self.notice = reason.clone();
@@ -103,7 +119,17 @@ impl Model {
                 self.refreshing = true;
             }
             Update::Files(rows) => {
-                for (row, entry) in rows {
+                for (mut row, entry) in rows {
+                    if entry.is_none() {
+                        if let Some(previous) = self.files.get(&row.path) {
+                            if row.modified_at.is_none() {
+                                row.modified_at = previous.modified_at;
+                            }
+                            row.activity = previous.activity;
+                        }
+                    } else if row.modified_at.is_none() {
+                        row.modified_at = entry.as_ref().map(|entry| entry.time);
+                    }
                     if self.baseline == "last clear"
                         && row.status == Status::Unchanged
                         && entry.is_none()
@@ -111,7 +137,15 @@ impl Model {
                     {
                         continue;
                     }
-                    self.files.insert(row.path.clone(), row);
+                    if let Some(old) = self.files.remove(&row.path) {
+                        remove_time(&mut self.modification_times, old.modified_at);
+                    }
+                    if !row.remove_from_tree {
+                        if let Some(time) = row.modified_at {
+                            *self.modification_times.entry(time).or_default() += 1;
+                        }
+                        self.files.insert(row.path.clone(), row);
+                    }
                     if let Some(mut entry) = entry {
                         if entry.bytes() > self.limit_bytes {
                             let budget = self
@@ -142,8 +176,15 @@ impl Model {
                 }
                 let retained: std::collections::HashSet<_> =
                     self.entries.iter().map(|e| e.path.as_str()).collect();
+                let times = &mut self.modification_times;
                 self.files.retain(|p, r| {
-                    r.status != Status::Unchanged || r.git != "  " || retained.contains(p.as_str())
+                    let keep = r.status != Status::Unchanged
+                        || r.git != "  "
+                        || retained.contains(p.as_str());
+                    if !keep {
+                        remove_time(times, r.modified_at);
+                    }
+                    keep
                 });
             }
             Update::Progress(message) => {
@@ -156,6 +197,17 @@ impl Model {
             }
             Update::WatchStatus(message) => self.watch_status = Some(message),
             Update::Done => self.refreshing = false,
+        }
+    }
+}
+
+fn remove_time(times: &mut BTreeMap<SystemTime, usize>, time: Option<SystemTime>) {
+    if let Some(time) = time {
+        if let Some(count) = times.get_mut(&time) {
+            *count -= 1;
+            if *count == 0 {
+                times.remove(&time);
+            }
         }
     }
 }
@@ -178,6 +230,8 @@ mod tests {
                     git: "  ".into(),
                     note: String::new(),
                     activity: Instant::now(),
+                    remove_from_tree: false,
+                    modified_at: None,
                 },
                 Some(Entry {
                     id,
@@ -195,6 +249,7 @@ mod tests {
         assert!(m.files.contains_key("0"));
         assert!(!m.files.contains_key("1"));
         assert_eq!(&*m.entries[0].diff, "old\nnew");
+        assert_eq!(m.modification_times.values().sum::<usize>(), m.files.len());
     }
     #[test]
     fn huge_entry_is_bounded_and_utf8_safe() {
@@ -206,6 +261,8 @@ mod tests {
                 git: "??".into(),
                 note: String::new(),
                 activity: Instant::now(),
+                remove_from_tree: false,
+                modified_at: None,
             },
             Some(Entry {
                 id: 1,

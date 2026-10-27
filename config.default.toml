@@ -1,0 +1,24 @@
+# Recon user configuration. Command-line flags override these values.
+# Reload by restarting Recon. --config PATH selects another configuration file.
+
+# Rendering: 1–240 FPS cap; frames are emitted only while something changes.
+fps = 60
+theme = "dark" # "dark" or "light"; background stays transparent
+reduced_motion = false
+no_animations = false
+animation_ms = 800 # 200–2000; spring entrance duration
+# Recency dots automatically rank observed file modification times.
+sidebar_width = 68 # 20–85; percent of terminal width, draggable during the session
+
+# Additional repository-relative ignore globs, alongside Git's ignore rules.
+ignore = [] # e.g. ["generated/**", "*.tmp"]
+
+# History and file-content budgets, in bytes.
+history_entries = 1000
+history_bytes = 67108864
+max_text_bytes = 1048576
+snapshot_bytes = 268435456
+
+# Watcher coalescing and missed-event recovery.
+debounce_ms = 75
+reconcile_seconds = 30

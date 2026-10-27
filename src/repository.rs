@@ -29,6 +29,7 @@ pub struct Content {
     pub hash: [u8; 32],
     pub text: Option<Arc<str>>,
     pub mode: u32,
+    pub modified_at: Option<std::time::SystemTime>,
 }
 impl Content {
     pub fn missing() -> Self {
@@ -38,7 +39,12 @@ impl Content {
             hash: [0; 32],
             text: None,
             mode: 0,
+            modified_at: None,
         }
+    }
+    pub fn with_modified_at(mut self, time: Option<std::time::SystemTime>) -> Self {
+        self.modified_at = time;
+        self
     }
     pub fn same(&self, other: &Self) -> bool {
         self.kind == other.kind
@@ -83,6 +89,7 @@ impl Content {
             text,
             size: bytes.len() as u64,
             mode,
+            modified_at: None,
         }
     }
 }
@@ -132,6 +139,34 @@ impl Repo {
             cancel: Arc::new(AtomicBool::new(false)),
             submodules,
         })
+    }
+    pub fn branch(&self) -> Result<String> {
+        match self.git.head() {
+            Ok(head) if head.is_branch() => {
+                Ok(head.shorthand().unwrap_or("unknown branch").to_owned())
+            }
+            Ok(head) => Ok(format!(
+                "detached {}",
+                head.target()
+                    .map(|id| id.to_string()[..8].to_owned())
+                    .unwrap_or_else(|| "HEAD".into())
+            )),
+            Err(error)
+                if matches!(
+                    error.code(),
+                    git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+                ) =>
+            {
+                let reference = self.git.find_reference("HEAD")?;
+                let name = reference
+                    .symbolic_target()
+                    .unwrap_or("HEAD")
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or("HEAD");
+                Ok(format!("{name} (unborn)"))
+            }
+            Err(error) => Err(error.into()),
+        }
     }
     pub fn head(&self) -> Result<Option<git2::Oid>> {
         match self.git.head() {
@@ -266,6 +301,7 @@ impl Repo {
                 hash: *blake3::hash(entry.id().to_string().as_bytes()).as_bytes(),
                 text: Some(entry.id().to_string().into()),
                 mode: 0o160000,
+                modified_at: None,
             });
         }
         if entry.kind() != Some(ObjectType::Blob) {
@@ -306,6 +342,7 @@ impl Repo {
                 hash: *hasher.finalize().as_bytes(),
                 text: None,
                 mode: entry.filemode() as u32,
+                modified_at: None,
             });
         }
         let blob = self.git.find_blob(entry.id())?;
@@ -340,13 +377,15 @@ impl Repo {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Content::missing()),
             Err(e) => return Ok(unreadable(e.to_string())),
         };
+        let modified_at = meta.modified().ok();
         if meta.file_type().is_symlink() {
             let target = fs::read_link(&full)?;
             return Ok(Content::from_bytes(
                 target.as_os_str().as_encoded_bytes(),
                 0o120000,
                 self.max_text,
-            ));
+            )
+            .with_modified_at(modified_at));
         }
         if self.submodules.contains(path) || (meta.is_dir() && full.join(".git").exists()) {
             let text = Repository::open(&full)
@@ -360,6 +399,7 @@ impl Repo {
                 hash: *blake3::hash(text.as_bytes()).as_bytes(),
                 text: Some(text.into()),
                 mode: 0o160000,
+                modified_at,
             });
         }
         if !meta.is_file() {
@@ -401,6 +441,7 @@ impl Repo {
                 hash: *hasher.finalize().as_bytes(),
                 text: None,
                 mode,
+                modified_at,
             });
         }
         let mut bytes = Vec::with_capacity(meta.len() as usize);
@@ -429,9 +470,10 @@ impl Repo {
                 hash: *hasher.finalize().as_bytes(),
                 text: None,
                 mode,
+                modified_at,
             });
         }
-        Ok(Content::from_bytes(&bytes, mode, self.max_text))
+        Ok(Content::from_bytes(&bytes, mode, self.max_text).with_modified_at(modified_at))
     }
 }
 fn unreadable(message: String) -> Content {
@@ -441,5 +483,6 @@ fn unreadable(message: String) -> Content {
         hash: *blake3::hash(message.as_bytes()).as_bytes(),
         text: Some(message.into()),
         mode: 0,
+        modified_at: None,
     }
 }

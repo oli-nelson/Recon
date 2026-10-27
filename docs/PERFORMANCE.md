@@ -94,3 +94,32 @@ paint behavior, Linux/Windows native
 watchers, network filesystems, long-running churn, and large production
 repositories with real ignore/filter/submodule configurations. The numeric reference-machine targets above pass on these fixtures; broader
 production and platform validation remains separate.
+
+## Visual refresh follow-up
+
+The animation/search/resizing update was also checked on the same reference
+machine with `python3 scripts/benchmark.py --paths 10000 --changed 10000`.
+This is a separate 10,000-path fixture, not a repeat of the 100,000-path run above.
+
+| Measurement | Visual refresh run |
+| --- | ---: |
+| Opening 10,000 changed files | 2,769 ms |
+| Render p95, 160×48 | 4.958 ms |
+| Worker 1 MiB update p95 / max | 116 / 2,195 ms |
+| Visible terminal-output update p95 / max | 131.75 / 131.78 ms |
+| 2,000-file convergence after writes | 418 ms |
+| Worker idle CPU | 0.06% |
+| Full app idle CPU, ten-second sample | 0.20% |
+| Peak benchmark RSS | 42.62 MiB |
+
+The worker sample included a 2,195 ms outlier; the visible-output phase did not
+reproduce it. Startup/burst transition latency remains useful follow-up coverage,
+though the sampled p95 and input targets passed. The large pseudo-terminal input
+check measured 6.21 ms during a 10,000-file startup refresh.
+
+`python3 scripts/animation_smoke.py` verifies real synchronized frame submissions
+at caps of 30, 60, 120 and 144 FPS, plus reduced-motion and no-animation modes.
+All six modes settled to **zero idle frames** after activity. These are submission
+caps, not monitor-refresh measurements. Unsupported synchronized-update terminals
+still need broader platform validation. The normal terminal smoke script now
+also exercises live search, match navigation, divider dragging, and width keys.

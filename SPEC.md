@@ -18,7 +18,8 @@ affected files alongside an animated history of incoming diff hunks.
   local changes against the current `HEAD`. Watching continues from that snapshot.
 - These commands affect Recon's view only. They never modify files, stage changes,
   discard edits, or alter Git history.
-- Display the active baseline (`HEAD` or the last clear) and refresh progress.
+- Display the current branch, active baseline (`HEAD` or the last clear), and
+  refresh progress. Branch labels support unborn and detached HEAD states.
 - The Git snapshot shows final working-tree contents against `HEAD`, with
   staged/unstaged status also visible. A file whose index changes cancel out in
   the working tree still appears with its Git status and an explanation when
@@ -27,12 +28,14 @@ affected files alongside an animated history of incoming diff hunks.
 ## File tree and activity
 
 - Show only affected files and their parent directories. Include files represented
-  in retained history, even when they no longer have a net change.
+  in retained history, even when they no longer have a net change, except deleted
+  untracked files, which leave the tree while their history remains available.
 - New files fly in from the right and use a distinct new-file color.
 - Modified files that are not yet visible fly in from the right and use a distinct
   modified-file color. Further edits briefly animate the existing row.
 - Editing a new file preserves its new-file color.
-- Deleted files animate out toward the right, then leave a greyed-out tombstone.
+- Deleted tracked files animate out toward the right, then leave a greyed-out
+  tombstone. Deleted untracked files leave the tree immediately.
 - Separate persistent status from transient activity: symbols and colors show
   status relative to the active baseline; brief animation highlights new activity.
 - Reverting to baseline preserves the file's historical entries and marks its row
@@ -40,12 +43,17 @@ affected files alongside an animated history of incoming diff hunks.
   status determined relative to the baseline; deletion history remains visible.
 - Keep paths in stable order, allow directory expansion/collapse, and preserve
   selection by file identity as other changes arrive.
+- A small file glyph shows recency ranked by observed filesystem modification
+  times across affected files. Equal times share a color. Update the scale on
+  observed filesystem changes, not wall time; staging alone preserves their age.
+  Metadata-only touches may update colors without adding content-edit history. Deleted files use the observed deletion time.
 - Use symbols or labels alongside colors. Support reduced motion and disabling
   animations entirely.
 
 ## Hunk history panel
 
-- A toggleable side panel shows a chronological history of incoming diff hunks,
+- A toggleable side panel shows a reverse-chronological history of incoming diff hunks,
+  newest at the top,
   grouped into file-update entries labeled with path, time, and activity type.
 - Pressing `d` hides or shows the sidebar in both aggregate hunk-stack and
   focused-file diff modes. While hidden, the tree uses the available width and
@@ -64,7 +72,7 @@ affected files alongside an animated history of incoming diff hunks.
   summary and can be expanded interactively.
 - Selecting a file filters history to that file without deleting other entries.
   Pressing `Esc` restores the aggregate history.
-- Follow incoming entries at the live end. Scrolling back pauses following and
+- Follow incoming entries at the top (the newest end). Scrolling back pauses following and
   preserves reading position. Indicate new activity and provide a return-to-live
   action.
 - Bound retained history by configurable entry and byte limits. Evict oldest
@@ -78,15 +86,19 @@ affected files alongside an animated history of incoming diff hunks.
 
 | Key | Behavior |
 | --- | --- |
+| `/` | Search file paths live; Enter keeps the query, Esc cancels |
+| `n` / `N` | Next / previous matching file |
+| `[` / `]` | Widen / narrow the sidebar; dragging the divider also resizes it |
 | `c` | Clear the view and observe from current contents |
 | `g` | Reset to the latest local Git changes |
 | `j` / `k`, Down / Up | Navigate tree files or scroll the focused history panel |
 | `h` / `l`, Left / Right | Collapse/expand tree directories |
 | `Tab` | Switch focus between tree and visible history panel |
 | `d` | Hide/show the sidebar, for both hunk history and focused file diffs |
-| `Enter` | Expand/collapse the focused history entry or hunk |
+| `Enter` | Open/focus selected file history; expand/collapse directories or history entries |
 | `PageUp` / `PageDown` | Scroll history by a page |
-| `End` | Return to the live end and resume following |
+| `Ctrl-D` / `Ctrl-U` | Half-page down/up in the focused sidebar |
+| `f` | Toggle live following; resume at the newest entry at the top |
 | `Esc` | Clear the file filter and show all history |
 | `?` | Show keybinding help |
 | `q` | Quit |
@@ -126,6 +138,9 @@ diff viewing. Validate Recon independently on representative large repositories.
   a full repository scan for every event.
 - Keep Git queries and diff computation outside the UI loop. Bound work queues
   and concurrency; discard stale results superseded by newer contents.
+- Use a configurable frame submission cap (60 FPS by default), synchronized
+  terminal updates where supported, and elapsed-time motion that skips missed
+  frames. Terminal display refresh timing is not automatically discoverable.
 - Render visible content and redraw on activity. Run animation ticks only while
   needed; the UI should be effectively idle when nothing changes.
 - Batch or shorten animations during heavy activity so they do not accumulate a
@@ -161,3 +176,12 @@ from these measurements before declaring the performance milestone complete.
 Verify baseline transitions, repeated edits, undo, delete/recreate, retention, and
 watcher reconciliation. Use burst fixtures to check responsiveness and ensure
 stale results cannot overwrite newer state.
+
+## User configuration
+
+Load settings from `config.toml`: `$XDG_CONFIG_HOME/recon/config.toml` or
+`~/.config/recon/config.toml` on Unix/macOS, and `%APPDATA%\recon\config.toml`
+on Windows. Create a documented default if missing, preserving existing files.
+Allow `--config PATH` and CLI overrides; reject malformed or unknown settings.
+Include frame rate, motion duration/accessibility, initial sidebar
+width, ignore patterns, history/content budgets, and watcher timing.
