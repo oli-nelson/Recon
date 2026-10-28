@@ -6,6 +6,8 @@ a fresh Unreleased section. Released versions are listed newest first.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-28
+
 - Add an end-user quick start, detailed user guide, and reproducible screenshots
   demonstrating Git status, successive edits, and fresh comparison baselines.
   Include the linked documentation and images in release archives.
