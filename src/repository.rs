@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use git2::{AttrCheckFlags, AttrValue, ObjectType, Repository, StatusOptions};
+use git2::{AttrCheckFlags, AttrValue, Repository, StatusOptions};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -294,29 +294,49 @@ impl Repo {
             Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(Content::missing()),
             Err(e) => return Err(e.into()),
         };
-        if entry.kind() == Some(ObjectType::Commit) {
+        let (oid, mode, normalize) = self.head_key(path, entry.id(), entry.filemode() as u32)?;
+        self.blob_content(path, oid, mode, normalize)
+    }
+    pub(crate) fn head_key(
+        &self,
+        path: &str,
+        oid: git2::Oid,
+        mode: u32,
+    ) -> Result<(git2::Oid, u32, bool)> {
+        Ok((
+            oid,
+            self.comparison_mode(mode)?,
+            mode != 0o120000 && mode != 0o160000 && self.normalize_line_endings(path)?,
+        ))
+    }
+    pub(crate) fn blob_content(
+        &self,
+        path: &str,
+        oid: git2::Oid,
+        mode: u32,
+        normalize: bool,
+    ) -> Result<Content> {
+        if mode == 0o160000 {
             return Ok(Content {
                 kind: Kind::Submodule,
                 size: 0,
-                hash: *blake3::hash(entry.id().to_string().as_bytes()).as_bytes(),
-                text: Some(entry.id().to_string().into()),
-                mode: 0o160000,
+                hash: *blake3::hash(oid.to_string().as_bytes()).as_bytes(),
+                text: Some(oid.to_string().into()),
+                mode,
                 modified_at: None,
             });
         }
-        if entry.kind() != Some(ObjectType::Blob) {
+        if !matches!(mode, 0o100644 | 0o100755 | 0o120000) {
             return Ok(Content::missing());
         }
         let odb = self.git.odb()?;
-        let (size, _) = odb.read_header(entry.id())?;
-        let mode = self.comparison_mode(entry.filemode() as u32)?;
-        let normalize = entry.filemode() != 0o120000 && self.normalize_line_endings(path)?;
+        let (size, _) = odb.read_header(oid)?;
         if size as u64 > self.max_text {
             // Stream raw blobs: never execute repository clean/smudge filters.
             let mut child = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&self.root)
-                .args(["cat-file", "blob", &entry.id().to_string()])
+                .args(["cat-file", "blob", &oid.to_string()])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
                 .spawn()?;
@@ -332,7 +352,7 @@ impl Repo {
             }
             return Ok(content);
         }
-        let blob = self.git.find_blob(entry.id())?;
+        let blob = self.git.find_blob(oid)?;
         self.read_content(&mut blob.content(), mode, normalize)
     }
     fn comparison_mode(&self, mode: u32) -> Result<u32> {

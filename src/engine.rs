@@ -16,6 +16,9 @@ pub struct Engine {
     observed: BTreeMap<String, Content>,
     statuses: BTreeMap<String, String>,
     head: Option<git2::Oid>,
+    head_tree: Option<git2::Oid>,
+    head_paths: BTreeMap<String, Option<(git2::Oid, u32)>>,
+    head_contents: BTreeMap<(git2::Oid, u32, bool), Content>,
     branch: String,
     next_id: u64,
     budget: usize,
@@ -27,10 +30,15 @@ impl Engine {
         let head = repo.head()?;
         let branch = repo.branch()?;
         Ok(Self {
-            repo,
             baseline: None,
             observed: BTreeMap::new(),
             statuses: BTreeMap::new(),
+            head_tree: head
+                .map(|id| repo.git.find_commit(id).map(|commit| commit.tree_id()))
+                .transpose()?,
+            head_paths: BTreeMap::new(),
+            head_contents: BTreeMap::new(),
+            repo,
             head,
             branch,
             next_id: 1,
@@ -81,6 +89,12 @@ impl Engine {
             }
             captured = Some(baseline);
         }
+        let head_tree = head
+            .map(|id| self.repo.git.find_commit(id).map(|commit| commit.tree_id()))
+            .transpose()?;
+        self.head_tree = head_tree;
+        self.head_paths.clear();
+        self.head_contents.clear();
         self.observed.clear();
         self.baseline = captured;
         self.used = captured_bytes;
@@ -110,12 +124,59 @@ impl Engine {
         }
         self.used += content.bytes();
     }
-    fn base(&self, path: &str) -> Result<Content> {
+    fn base(&mut self, path: &str) -> Result<Content> {
         if let Some(base) = &self.baseline {
-            Ok(base.get(path).cloned().unwrap_or_else(Content::missing))
-        } else {
-            self.repo.head_content(path, self.head)
+            return Ok(base.get(path).cloned().unwrap_or_else(Content::missing));
         }
+        let identity = if let Some(identity) = self.head_paths.get(path) {
+            *identity
+        } else {
+            let identity = if let Some(tree) = self.head_tree {
+                let tree = self.repo.git.find_tree(tree)?;
+                match tree.get_path(std::path::Path::new(path)) {
+                    Ok(entry) => Some((entry.id(), entry.filemode() as u32)),
+                    Err(error) if error.code() == git2::ErrorCode::NotFound => None,
+                    Err(error) => return Err(error.into()),
+                }
+            } else {
+                None
+            };
+            self.head_paths.insert(path.to_owned(), identity);
+            identity
+        };
+        let Some((oid, mode)) = identity else {
+            return Ok(Content::missing());
+        };
+        // Attributes and comparison config can change without changing HEAD.
+        let key = self.repo.head_key(path, oid, mode)?;
+        if let Some(content) = self.head_contents.get(&key) {
+            return Ok(content.clone());
+        }
+        let mut content = self.repo.blob_content(path, key.0, key.1, key.2)?;
+        self.retain(&mut content);
+        self.head_contents.insert(key, content.clone());
+        Ok(content)
+    }
+
+    pub(crate) fn observed_under(&self, path: &str) -> bool {
+        let prefix = format!("{path}/");
+        [
+            &self.observed,
+            self.baseline.as_ref().unwrap_or(&self.observed),
+        ]
+        .into_iter()
+        .any(|map| {
+            map.contains_key(path)
+                || map
+                    .range(prefix.clone()..)
+                    .next()
+                    .is_some_and(|(key, _)| key.starts_with(&prefix))
+        }) || self.statuses.contains_key(path)
+            || self
+                .statuses
+                .range(prefix.clone()..)
+                .next()
+                .is_some_and(|(key, _)| key.starts_with(&prefix))
     }
     pub fn refresh(
         &mut self,
@@ -368,4 +429,82 @@ fn make_diff(path: &str, old: &Content, new: &Content, limit: u64) -> String {
         output.push_str("\n[diff truncated to text limit]");
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn commit(repo: &git2::Repository, text: &[u8]) {
+        let oid = repo.blob(text).unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        builder.insert("a", oid, 0o100644).unwrap();
+        builder.insert("b", oid, 0o100644).unwrap();
+        let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.invalid").unwrap();
+        let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "fixture",
+            &tree,
+            &parent.iter().collect::<Vec<_>>(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn head_cache_shares_blobs_bounds_text_and_replaces_head_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        commit(&repo, b"one\r\n");
+        let config = Config::parse_from(["recon", dir.path().to_str().unwrap()]);
+        let mut engine = Engine::new(&config).unwrap();
+        engine.budget = 5;
+        let first = engine.base("a").unwrap();
+        let second = engine.base("b").unwrap();
+        assert!(Arc::ptr_eq(
+            first.text.as_ref().unwrap(),
+            second.text.as_ref().unwrap()
+        ));
+        assert_eq!(engine.head_contents.len(), 1);
+        assert_eq!(engine.used, 5);
+        // Attributes differ by path even for the same blob; fingerprints must differ.
+        std::fs::write(dir.path().join(".gitattributes"), "b text\n").unwrap();
+        let normalized = engine.base("b").unwrap();
+        assert_ne!(normalized.hash, first.hash);
+        assert!(normalized.text.is_none());
+        assert_eq!(engine.used, 5);
+        assert_eq!(engine.head_contents.len(), 2);
+        assert!(engine.base("missing").unwrap().kind == Kind::Missing);
+        commit(&repo, b"two\n");
+        engine.refresh(None, false, &mut |_| {}).unwrap();
+        let replacement = engine.base("a").unwrap();
+        assert_ne!(replacement.hash, first.hash);
+        assert!(engine.used <= engine.budget);
+    }
+
+    #[test]
+    fn large_head_fingerprint_is_reused_without_retained_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        commit(&repo, &vec![b'x'; 1024 * 1024]);
+        let mut config = Config::parse_from(["recon", dir.path().to_str().unwrap()]);
+        config.max_text_bytes = 1024;
+        let mut engine = Engine::new(&config).unwrap();
+        let first = engine.base("a").unwrap();
+        assert_eq!(first.kind, Kind::Large);
+        // A new streaming read would fail cancellation; a cache hit needs no read.
+        engine
+            .repo
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        for _ in 0..10 {
+            assert!(engine.base("a").unwrap().same(&first));
+        }
+        assert_eq!(engine.head_contents.len(), 1);
+        assert_eq!(engine.used, 0);
+    }
 }

@@ -6,6 +6,11 @@ a fresh Unreleased section. Released versions are listed newest first.
 
 ## [Unreleased]
 
+- Keep large change trees responsive by caching their structure and rendering only
+  visible rows; update live rows without rescanning the entire model per batch.
+- Reuse HEAD blob fingerprints and bounded text across refreshes, and suppress
+  Git-ignored build events while preserving tracked files and prior observations.
+
 - Dissolve newly created and restored file labels into the tree with the reverse
   of the deletion animation, keeping Git status and tree guides fixed.
 

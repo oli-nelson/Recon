@@ -123,3 +123,13 @@ All six modes settled to **zero idle frames** after activity. These are submissi
 caps, not monitor-refresh measurements. Unsupported synchronized-update terminals
 still need broader platform validation. The normal terminal smoke script now
 also exercises live search, match navigation, divider dragging, and width keys.
+
+
+## Performance review follow-up (2026-10-28)
+
+`cargo run --release --locked --example performance_review` reproduces the focused
+model batching, cached viewport rendering, and repeated 32 MiB refresh probes.
+See [the review resolution](../PERFORMANCE_REVIEW.md#resolution--2026-10-28) for
+results, implementation details, and validation scope. Cold tree rebuilds still
+scale with affected-file count; working-file hashing and raw watcher queue traffic
+remain even when HEAD blobs and ignored refresh work are avoided.

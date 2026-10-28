@@ -9,8 +9,68 @@ files, a diff computation deadline, and no idle redraws. The main opportunities
 are eliminating repeated work proportional to the affected-file count or file
 size.
 
-The four findings below are P2 performance improvements. Start with visible-row
-rendering and caching immutable HEAD data.
+The four findings below were P2 performance improvements. They are retained as
+historical evidence; the implementation follow-up is recorded here.
+
+## Resolution — 2026-10-28
+
+All four findings are addressed:
+
+1. Structural rows are cached until model paths, search, or collapse state changes.
+   Draws build and style only the viewport, using binary search for selection.
+   Counts, recency ranks, and the animation activity scan are reused between model
+   updates. Collapse checks inspect ancestors rather than every collapsed folder.
+2. The engine caches the HEAD tree ID, lazy path-to-object mapping, and content by
+   object ID, effective mode, and line-ending normalization. Text shares the existing
+   snapshot budget with observations; fingerprints survive text-budget exhaustion.
+   Reset/HEAD changes discard the mapping and cache. Attributes/config are checked
+   when choosing a content key, so identical blobs with different comparison rules
+   do not share the wrong fingerprint. Working files are still fully read.
+3. Watcher classification rejects Git-ignored paths before scheduling path/full
+   refreshes. Index prefix lookups and prior observations preserve tracked paths,
+   directories containing them, and paths needing model removal. Ignore decisions
+   are not cached; ignore-rule events still reconcile. Native notifications still
+   enter the bounded raw event channel, so extreme churn can still cause overflow
+   and safety reconciliation.
+4. Model batches reconsider only supplied paths. Current live-tree policy already
+   removes unchanged, status-free rows independently of retained history, so history
+   reference counts would add unnecessary state. Status-only rows, history eviction,
+   and modification-time counts retain their existing behavior.
+
+### Repeatable measurements
+
+Run `cargo run --release --locked --example performance_review`. The committed
+probe uses a 160×48 TestBackend, no animations or history, short paths, and 64-file
+model batches. Fixture row construction is excluded from load timing; cloning
+batches is included. Cached draws change selection across the tree and report the
+median of 21 draws after a separately measured first draw. A 32 MiB tracked file
+is changed once; each refresh mean covers ten calls after the opening snapshot.
+
+Repeat-run results on macOS 26.7.1 arm64 with Rust 1.88.0:
+
+| Affected files | Model batch load | First draw | Cached draw median |
+| --- | ---: | ---: | ---: |
+| 1,000 | 0.59 ms | 1.31 ms | 0.33 ms |
+| 10,000 | 4.89 ms | 2.96 ms | 0.25 ms |
+| 50,000 | 20.58 ms | 12.92 ms | 0.18 ms |
+| 100,000 | 33.53 ms | 21.32 ms | 0.17 ms |
+
+Repeated 32 MiB refresh means: **64.69 ms path-scoped**, **63.96 ms full**.
+These probes are comparable in shape to the original review, but not a controlled
+before/after run of the same harness. They do not measure terminal painting,
+end-to-end ignored build churn, or Linux/Windows watchers. Cold structural rebuilds
+still scale with affected-file count and can exceed a 16.7 ms frame budget.
+
+### Validation
+
+Passed on macOS: `cargo fmt --check`,
+`cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`
+(46 unit tests and 22 integration tests), and `bash scripts/test-release.sh`.
+Added regression coverage for cache reuse/invalidation, selection scrolling,
+blob sharing, text-budget exhaustion, HEAD replacement, per-path attributes,
+large-blob fingerprint reuse, and ignored/tracked/observed watcher paths.
+
+The original measurements and findings follow.
 
 ## 1. Build only visible file rows and cache the tree
 

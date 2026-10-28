@@ -74,6 +74,8 @@ pub enum Command {
 
 pub struct Model {
     pub root: PathBuf,
+    pub revision: u64,
+    pub tree_revision: u64,
     pub files: BTreeMap<String, FileRow>,
     pub entries: VecDeque<Entry>,
     pub bytes: usize,
@@ -94,6 +96,8 @@ impl Model {
     pub fn new(entries: usize, bytes: usize) -> Self {
         Self {
             root: PathBuf::new(),
+            revision: 0,
+            tree_revision: 0,
             files: BTreeMap::new(),
             entries: VecDeque::new(),
             bytes: 0,
@@ -162,6 +166,8 @@ impl Model {
                 reason,
                 branch,
             } => {
+                self.revision = self.revision.wrapping_add(1);
+                self.tree_revision = self.tree_revision.wrapping_add(1);
                 self.root = root;
                 self.branch = branch;
                 self.files.clear();
@@ -175,6 +181,7 @@ impl Model {
                 self.begin_refresh();
             }
             Update::Files(rows) => {
+                self.revision = self.revision.wrapping_add(1);
                 for (mut row, entry) in rows {
                     if entry.is_none() {
                         if let Some(previous) = self.files.get(&row.path) {
@@ -193,10 +200,15 @@ impl Model {
                     {
                         continue;
                     }
+                    let keep = !row.remove_from_tree
+                        && (row.status != Status::Unchanged || !row.git.trim().is_empty());
+                    if keep != self.files.contains_key(&row.path) {
+                        self.tree_revision = self.tree_revision.wrapping_add(1);
+                    }
                     if let Some(old) = self.files.remove(&row.path) {
                         remove_time(&mut self.modification_times, old.modified_at);
                     }
-                    if !row.remove_from_tree {
+                    if keep {
                         if let Some(time) = row.modified_at {
                             *self.modification_times.entry(time).or_default() += 1;
                         }
@@ -230,14 +242,6 @@ impl Model {
                         break;
                     }
                 }
-                let times = &mut self.modification_times;
-                self.files.retain(|_, r| {
-                    let keep = r.status != Status::Unchanged || !r.git.trim().is_empty();
-                    if !keep {
-                        remove_time(times, r.modified_at);
-                    }
-                    keep
-                });
             }
             Update::Progress(message) => {
                 self.begin_refresh();

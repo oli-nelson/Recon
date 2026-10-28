@@ -31,8 +31,10 @@ use ratatui::{
     },
 };
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     io::{self, IsTerminal},
+    rc::Rc,
     time::{Instant, UNIX_EPOCH},
 };
 
@@ -64,6 +66,8 @@ pub struct View {
     pub search: String,
     pub searching: bool,
     search_backup: Option<SearchBackup>,
+    tree_cache: RefCell<Option<TreeCache>>,
+    summary_cache: Option<(u64, [usize; 4], Vec<std::time::SystemTime>)>,
 }
 impl View {
     pub fn new() -> Self {
@@ -92,7 +96,31 @@ struct TreeRow {
     dir: bool,
     depth: usize,
 }
-fn tree(model: &Model, view: &View) -> Vec<TreeRow> {
+struct TreeCache {
+    revision: u64,
+    search: String,
+    collapsed: BTreeSet<String>,
+    rows: Rc<Vec<TreeRow>>,
+}
+fn tree(model: &Model, view: &View) -> Rc<Vec<TreeRow>> {
+    if let Some(cache) = view.tree_cache.borrow().as_ref() {
+        if cache.revision == model.tree_revision
+            && cache.search == view.search
+            && cache.collapsed == view.collapsed
+        {
+            return Rc::clone(&cache.rows);
+        }
+    }
+    let rows = Rc::new(build_tree(model, view));
+    *view.tree_cache.borrow_mut() = Some(TreeCache {
+        revision: model.tree_revision,
+        search: view.search.clone(),
+        collapsed: view.collapsed.clone(),
+        rows: Rc::clone(&rows),
+    });
+    rows
+}
+fn build_tree(model: &Model, view: &View) -> Vec<TreeRow> {
     let mut nodes = BTreeSet::new();
     let query = view.search.to_lowercase();
     for path in model.files.keys() {
@@ -113,7 +141,10 @@ fn tree(model: &Model, view: &View) -> Vec<TreeRow> {
     nodes
         .into_iter()
         .filter(|(p, _)| {
-            !view.search.is_empty() || !view.collapsed.iter().any(|d| p != d && p.starts_with(d))
+            !view.search.is_empty()
+                || !p
+                    .match_indices('/')
+                    .any(|(i, _)| i + 1 < p.len() && view.collapsed.contains(&p[..=i]))
         })
         .map(|(key, dir)| TreeRow {
             depth: key.trim_end_matches('/').matches('/').count(),
@@ -260,6 +291,7 @@ pub fn run(config: &Config, worker: Worker) -> Result<()> {
     let mut dirty = true;
     let mut pacer = FramePacer::new(config.fps, Instant::now());
     let mut was_active = false;
+    let mut latest_activity = None;
     let mut was_refresh_visible = false;
     let result = (|| -> Result<()> {
         loop {
@@ -309,14 +341,14 @@ pub fn run(config: &Config, worker: Worker) -> Result<()> {
             if !view.following || !view.sidebar {
                 view.unseen += added;
             }
+            if updated {
+                latest_activity = model.files.values().map(|row| row.activity).max();
+            }
             let duration = std::time::Duration::from_millis(config.animation_ms);
             view.arrivals
                 .retain(|path, start| start.elapsed() < duration && model.files.contains_key(path));
             let active = !config.no_animations
-                && model
-                    .files
-                    .values()
-                    .any(|r| r.activity.elapsed() < duration)
+                && latest_activity.is_some_and(|activity| activity.elapsed() < duration)
                 || (!config.no_animations
                     && view.sidebar
                     && model
@@ -525,7 +557,11 @@ fn handle_key(
             view.panel_focus = false;
         }
         Char('n') | Char('N') if !view.search.is_empty() => {
-            let rows: Vec<_> = tree(model, view).into_iter().filter(|r| !r.dir).collect();
+            let rows: Vec<_> = tree(model, view)
+                .iter()
+                .filter(|r| !r.dir)
+                .cloned()
+                .collect();
             if !rows.is_empty() {
                 let current = rows
                     .iter()
@@ -665,7 +701,7 @@ fn handle_key(
                     let index = view
                         .selected
                         .as_ref()
-                        .and_then(|p| rows.iter().position(|r| &r.key == p))
+                        .and_then(|p| rows.binary_search_by(|r| r.key.cmp(p)).ok())
                         .unwrap_or(if down { usize::MAX } else { 0 });
                     let index = if down {
                         if index == usize::MAX {
@@ -695,7 +731,7 @@ fn handle_key(
             if let Some(index) = view
                 .selected
                 .as_ref()
-                .and_then(|p| rows.iter().position(|r| &r.key == p))
+                .and_then(|p| rows.binary_search_by(|r| r.key.cmp(p)).ok())
             {
                 let row = &rows[index];
                 let expand = matches!(key.code, Char('l') | Right)
@@ -743,7 +779,27 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
     let fg = palette.foreground;
     let muted = palette.muted;
     let accent = palette.accent;
-    let times: Vec<_> = model.modification_times.keys().copied().collect();
+    if view
+        .summary_cache
+        .as_ref()
+        .is_none_or(|cache| cache.0 != model.revision)
+    {
+        let mut counts = [0; 4];
+        for file in model.files.values() {
+            counts[match file.status {
+                Status::New => 0,
+                Status::Modified => 1,
+                Status::Deleted => 2,
+                Status::Unchanged => 3,
+            }] += 1;
+        }
+        view.summary_cache = Some((
+            model.revision,
+            counts,
+            model.modification_times.keys().copied().collect(),
+        ));
+    }
+    let (_, counts, times) = view.summary_cache.as_ref().unwrap();
     frame.render_widget(
         Block::default().style(Style::default().bg(bg).fg(fg)),
         frame.area(),
@@ -772,15 +828,6 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
     } else {
         "●"
     };
-    let mut counts = [0usize; 4];
-    for file in model.files.values() {
-        counts[match file.status {
-            Status::New => 0,
-            Status::Modified => 1,
-            Status::Deleted => 2,
-            Status::Unchanged => 3,
-        }] += 1;
-    }
     let positive = palette.positive;
     let negative = palette.negative;
     let gold = palette.gold;
@@ -842,9 +889,20 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         let selected = view
             .selected
             .as_ref()
-            .and_then(|p| rows.iter().position(|r| &r.key == p));
+            .and_then(|p| rows.binary_search_by(|r| r.key.cmp(p)).ok());
+        let height = tree_rect.height.saturating_sub(2) as usize;
+        view.tree_offset = view.tree_offset.min(rows.len().saturating_sub(height));
+        if let Some(selected) = selected {
+            if selected < view.tree_offset {
+                view.tree_offset = selected;
+            } else if selected >= view.tree_offset + height {
+                view.tree_offset = selected.saturating_sub(height.saturating_sub(1));
+            }
+        }
         let items: Vec<_> = rows
             .iter()
+            .skip(view.tree_offset)
+            .take(height)
             .map(|r| {
                 let indent = "│ ".repeat(r.depth);
                 let name = r
@@ -904,7 +962,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                             "● ",
                             Style::default()
                                 .fg(palette
-                                    .recency(animation::relative_age(file.modified_at, &times))),
+                                    .recency(animation::relative_age(file.modified_at, times))),
                         ),
                         Span::styled(
                             if arriving && !deleted {
@@ -970,18 +1028,17 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             .highlight_spacing(HighlightSpacing::Always)
             .block(block)
             .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
-        let mut state = ListState::default()
-            .with_offset(view.tree_offset)
-            .with_selected(selected);
+        let mut state =
+            ListState::default().with_selected(selected.map(|index| index - view.tree_offset));
         frame.render_stateful_widget(list, tree_rect, &mut state);
-        view.tree_offset = state.offset();
+
         // Departures dissolve over a muted tombstone; arrivals reverse the effect.
         // Render only the label so Git status, recency, and tree guides stay fixed.
         if !config.no_animations && !config.reduced_motion {
             let inner = inset(tree_rect);
             for (index, row) in rows
                 .iter()
-                .skip(state.offset())
+                .skip(view.tree_offset)
                 .take(inner.height as usize)
                 .enumerate()
                 .filter(|(_, row)| !row.dir)
@@ -1025,7 +1082,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                 };
                 let color = animation::glow(color, age, duration, true, light);
                 let mut style = Style::default().fg(color).add_modifier(Modifier::BOLD);
-                if selected == Some(state.offset() + index) {
+                if selected == Some(view.tree_offset + index) {
                     style = style.add_modifier(Modifier::UNDERLINED);
                 }
                 render_departing_label(
@@ -1598,6 +1655,53 @@ mod tests {
     use clap::Parser;
     use ratatui::backend::TestBackend;
     #[test]
+    fn tree_cache_and_viewport_follow_selection_and_invalidate_structure() {
+        let mut model = history_model();
+        let mut view = View::new();
+        view.sidebar = false;
+        let first = tree(&model, &view);
+        assert!(Rc::ptr_eq(&first, &tree(&model, &view)));
+        let mut row = model.files["dir/file0.rs"].clone();
+        row.note = "status update".into();
+        model.apply(crate::model::Update::Files(vec![(row.clone(), None)]));
+        assert!(Rc::ptr_eq(&first, &tree(&model, &view)));
+        row.path = "dir/zzz.rs".into();
+        model.apply(crate::model::Update::Files(vec![(row, None)]));
+        assert!(!Rc::ptr_eq(&first, &tree(&model, &view)));
+        let config = Config::parse_from(["recon", "--no-animations"]);
+        let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
+        view.selected = Some("dir/zzz.rs".into());
+        terminal
+            .draw(|f| draw(f, &model, &mut view, &config))
+            .unwrap();
+        assert_eq!(view.tree_offset, 6);
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| cell.symbol() == "z")
+        );
+        view.selected = Some("dir/".into());
+        terminal
+            .draw(|f| draw(f, &model, &mut view, &config))
+            .unwrap();
+        assert_eq!(view.tree_offset, 0);
+        view.collapsed.insert("dir/".into());
+        assert_eq!(tree(&model, &view).len(), 1);
+        view.search = "zzz".into();
+        assert_eq!(tree(&model, &view).len(), 2);
+        model.apply(crate::model::Update::Reset {
+            root: model.root.clone(),
+            baseline: "HEAD".into(),
+            reason: "".into(),
+            branch: "main".into(),
+        });
+        assert!(tree(&model, &view).is_empty());
+    }
+
+    #[test]
     fn notification_gradient_drains_without_changing_the_message_or_background() {
         let message = "Cleared • observe 界e\u{301} changes";
         let accent = Color::Rgb(200, 100, 50);
@@ -2163,7 +2267,11 @@ mod tests {
         for c in "FILE3".chars() {
             handle_key(KeyCode::Char(c).into(), &mut model, &mut view, &tx, 24);
         }
-        let matches: Vec<_> = tree(&model, &view).into_iter().filter(|r| !r.dir).collect();
+        let matches: Vec<_> = tree(&model, &view)
+            .iter()
+            .filter(|r| !r.dir)
+            .cloned()
+            .collect();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].key, "dir/file3.rs");
         assert!(!view.sidebar);

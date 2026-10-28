@@ -277,6 +277,18 @@ fn classify(raw: &Path, engine: &Engine) -> Option<Option<String>> {
     if repo.excluded(&p) {
         return None;
     }
+    // Query Git's current rules rather than caching decisions across ignore/index edits.
+    // Keep tracked descendants and prior observations, including removed directories.
+    if repo.ignored(&p) && !engine.observed_under(&p) {
+        if let Ok(index) = repo.git.index() {
+            let prefix = format!("{p}/");
+            let tracked = index.get_path(Path::new(&p), 0).is_some()
+                || index.find_prefix(prefix.as_str()).is_ok();
+            if !tracked {
+                return None;
+            }
+        }
+    }
     // Directory renames/removals require discovering affected descendants.
     if path.is_dir() || (!path.exists() && !repo.submodules.contains(&p)) {
         return Some(None);
@@ -288,6 +300,48 @@ fn classify(raw: &Path, engine: &Engine) -> Option<Option<String>> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn ignored_noise_preserves_tracked_observed_and_rule_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(directory.path()).unwrap();
+        let root = directory.path();
+        std::fs::create_dir(root.join("build")).unwrap();
+        std::fs::write(root.join("build/tracked"), "tracked").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("build/tracked")).unwrap();
+        index.write().unwrap();
+        std::fs::write(root.join("seen"), "observed").unwrap();
+        let config = Config::parse_from(["recon", root.to_str().unwrap()]);
+        let mut engine = Engine::new(&config).unwrap();
+        engine.reset(false, "", &mut |_| {}).unwrap();
+        std::fs::write(root.join(".gitignore"), "build/\nnoise/\nseen\n").unwrap();
+        std::fs::create_dir(root.join("noise")).unwrap();
+        std::fs::write(root.join("noise/artifact"), "noise").unwrap();
+        std::fs::write(root.join("build/artifact"), "noise").unwrap();
+        assert_eq!(classify(&root.join("noise/artifact"), &engine), None);
+        assert_eq!(classify(&root.join("noise"), &engine), None);
+        assert_eq!(classify(&root.join("build/artifact"), &engine), None);
+        assert_eq!(
+            classify(&root.join("build/tracked"), &engine),
+            Some(Some("build/tracked".into()))
+        );
+        assert_eq!(classify(&root.join("build"), &engine), Some(None));
+        assert_eq!(
+            classify(&root.join("seen"), &engine),
+            Some(Some("seen".into()))
+        );
+        assert_eq!(classify(&root.join(".gitignore"), &engine), Some(None));
+        std::fs::remove_dir_all(root.join("noise")).unwrap();
+        assert_eq!(classify(&root.join("noise/artifact"), &engine), None);
+        std::fs::write(root.join(".gitignore"), "").unwrap();
+        std::fs::create_dir(root.join("noise")).unwrap();
+        std::fs::write(root.join("noise/artifact"), "now visible").unwrap();
+        assert_eq!(
+            classify(&root.join("noise/artifact"), &engine),
+            Some(Some("noise/artifact".into()))
+        );
+    }
 
     #[cfg(unix)]
     #[test]
