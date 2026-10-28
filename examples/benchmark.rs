@@ -118,33 +118,38 @@ fn main() {
         finished.saturating_duration_since(writes_done).as_millis(),
         model.bytes
     );
-    // In-process resource accounting also works when sandbox policy blocks ps.
-    fn resources() -> (f64, u64) {
-        let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
-        // SAFETY: getrusage initializes the supplied writable rusage on success.
-        let result = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
-        assert_eq!(result, 0);
-        let usage = unsafe { usage.assume_init() };
-        let cpu = usage.ru_utime.tv_sec as f64
-            + usage.ru_utime.tv_usec as f64 / 1e6
-            + usage.ru_stime.tv_sec as f64
-            + usage.ru_stime.tv_usec as f64 / 1e6;
-        let rss = usage.ru_maxrss as u64;
-        #[cfg(target_os = "macos")]
-        let bytes = rss;
-        #[cfg(not(target_os = "macos"))]
-        let bytes = rss * 1024;
-        (cpu, bytes)
-    }
     until(&worker, &mut model, |_, u| matches!(u, Update::Done));
-    std::thread::sleep(Duration::from_millis(500));
-    let before = resources();
-    std::thread::sleep(Duration::from_secs(5));
-    let after = resources();
-    println!(
-        "idle_worker_cpu_percent={:.2} peak_rss_mib={:.2}",
-        (after.0 - before.0) / 5. * 100.,
-        after.1 as f64 / 1048576.
-    );
+    #[cfg(not(unix))]
+    println!("idle worker CPU and peak RSS measurements unavailable on this platform");
+    #[cfg(unix)]
+    {
+        // In-process resource accounting also works when sandbox policy blocks ps.
+        fn resources() -> (f64, u64) {
+            let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+            // SAFETY: getrusage initializes the supplied writable rusage on success.
+            let result = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+            assert_eq!(result, 0);
+            let usage = unsafe { usage.assume_init() };
+            let cpu = usage.ru_utime.tv_sec as f64
+                + usage.ru_utime.tv_usec as f64 / 1e6
+                + usage.ru_stime.tv_sec as f64
+                + usage.ru_stime.tv_usec as f64 / 1e6;
+            let rss = usage.ru_maxrss as u64;
+            #[cfg(target_os = "macos")]
+            let bytes = rss;
+            #[cfg(not(target_os = "macos"))]
+            let bytes = rss * 1024;
+            (cpu, bytes)
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        let before = resources();
+        std::thread::sleep(Duration::from_secs(5));
+        let after = resources();
+        println!(
+            "idle_worker_cpu_percent={:.2} peak_rss_mib={:.2}",
+            (after.0 - before.0) / 5. * 100.,
+            after.1 as f64 / 1048576.
+        );
+    }
     worker.stop();
 }
