@@ -1,27 +1,24 @@
 # Changelog
 
-Add concise, user-facing changes under Unreleased. After every release build and
-test succeeds, GitHub Actions promotes these notes into a dated version section
-and creates a fresh Unreleased section. Keep released sections unchanged.
+Noteworthy changes to Recon are recorded here. Add entries under Unreleased;
+the validated release workflow moves them into a dated version section and creates
+a fresh Unreleased section. Released versions are listed newest first.
 
 ## [Unreleased]
 
-- Watch Git working trees and linked worktrees with a live file tree and bounded,
-  in-memory edit history, including staged, unstaged, and untracked changes.
-- Configure themes, animation, keyboard shortcuts, ignore patterns, and history
-  limits through a configuration file or command-line options.
-- Publish tested macOS Intel/Apple Silicon, Windows x64, and Linux x64 executable
-  archives with checksums, changelog release notes, and matching `--version` output.
-- Bundle local-only Git support without requiring a Homebrew OpenSSL installation.
-- Avoid false edit hunks from Git-configured CRLF line endings, untrusted executable
-  bits, and plain-file symlink checkouts on Windows and shared filesystems.
-- Avoid duplicate filesystem watches and symlink traversal; keep periodic recovery
-  responsive without spinning when native watchers cannot start. Preserve literal
-  backslashes in Unix filenames.
-- Keep the watching indicator and shortcut footer stable during brief background
-  refreshes; show progress when work lasts longer than a quarter second.
-- Mark the selected history entry and show which file Enter will expand or collapse,
-  including when its header is scrolled offscreen. Navigate selection within the
-  pane before scrolling, and keep the same entry selected after folding.
-- Use Left/Right and h/l to scroll wide hunks horizontally when history has focus,
-  without changing file-tree folders. Keep entry headers and selection markers fixed.
+- View live Git changes in a terminal file tree, including staged, unstaged, and
+  untracked files in repositories and linked worktrees. Compare against HEAD or
+  capture current contents as a fresh baseline without modifying the repository.
+- Keep a bounded, in-memory history of observed edits, with collapsible hunks,
+  live following, clear entry selection, and vertical and horizontal navigation.
+  Summarize binary and oversized files without retaining their full contents.
+- Search file paths, filter history by file, and open the focused file in your
+  VISUAL/EDITOR with `e`, returning to Recon when the editor exits.
+- Customize keyboard shortcuts, themes, animation, ignore patterns, and memory
+  limits through a configuration file and command-line options.
+- Follow filesystem changes with native watchers and periodic reconciliation,
+  reporting gaps when intermediate edits may have been missed. Handle configured
+  Git line endings, executable-bit settings, and plain-file symlink checkouts.
+- Build native release archives for macOS Intel and Apple Silicon, Windows x64,
+  and Linux x64 through GitHub Actions, with SHA-256 checksums, changelog-derived
+  release notes, and matching `--version` output.

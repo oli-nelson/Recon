@@ -866,6 +866,7 @@ dependencies = [
  "notify",
  "ratatui",
  "serde",
+ "shlex",
  "similar",
  "tempfile",
  "toml",

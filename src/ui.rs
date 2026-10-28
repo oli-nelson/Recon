@@ -5,8 +5,9 @@ use crate::{
     model::{Command, Model, Status},
     watch::Worker,
 };
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use crossterm::{
+    cursor::{Hide, Show},
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
         KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -46,6 +47,7 @@ pub struct View {
     pub scroll: usize,
     pub cursor: usize,
     pub horizontal_scroll: u16,
+    edit_requested: Option<std::path::PathBuf>,
     horizontal_max: u16,
     pub help: bool,
     pub unseen: usize,
@@ -208,6 +210,39 @@ impl Drop for TerminalGuard {
         );
     }
 }
+/// Editor failures become notices; a failure to restore the terminal ends the UI.
+fn run_editor(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    mut command: std::process::Command,
+) -> Result<Option<String>> {
+    let result = (|| -> Result<()> {
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            EndSynchronizedUpdate,
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            Show
+        )?;
+        let status = command.status().context("Cannot start editor")?;
+        if !status.success() {
+            bail!("Editor exited with {status}");
+        }
+        Ok(())
+    })();
+    // Run restoration even if terminal suspension or spawning the editor failed.
+    enable_raw_mode().context("Cannot restore raw terminal mode after editor")?;
+    execute!(
+        terminal.backend_mut(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        Hide
+    )?;
+    terminal.autoresize()?;
+    terminal.clear()?;
+    Ok(result.err().map(|error| format!("{error:#}")))
+}
+
 pub fn run(config: &Config, worker: Worker) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         anyhow::bail!("Interactive mode requires a terminal; use --once for a snapshot");
@@ -285,9 +320,8 @@ pub fn run(config: &Config, worker: Worker) -> Result<()> {
                         .back()
                         .is_some_and(|e| e.time.elapsed().is_ok_and(|age| age < duration)));
             let active = active || (!config.no_animations && !view.arrivals.is_empty());
-            let notice_visible = model.notice_remaining(Instant::now()).is_some()
-                && !view.searching
-                && view.search.is_empty();
+            let notice_visible =
+                model.notice_remaining(Instant::now()).is_some() && !view.searching;
             let refresh_visible = model.refresh_visible(Instant::now());
             dirty |= refresh_visible != was_refresh_visible;
             was_refresh_visible = refresh_visible;
@@ -329,6 +363,15 @@ pub fn run(config: &Config, worker: Worker) -> Result<()> {
                             handle_key(key, &mut model, &mut view, &worker.commands, height)
                         }) {
                             break;
+                        }
+                        if let Some(path) = view.edit_requested.take() {
+                            let error = match crate::editor::command(&model.root, &path) {
+                                Ok(command) => run_editor(&mut terminal, command)?,
+                                Err(error) => Some(format!("{error:#}")),
+                            };
+                            if let Some(error) = error {
+                                model.apply(crate::model::Update::Notice(error));
+                            }
                         }
                         dirty = true;
                     }
@@ -492,6 +535,21 @@ fn handle_key(
                 select(view, &rows[next]);
             }
         }
+        Char('e') => {
+            let path = if view.panel_focus {
+                focused_history_entry(model, view).map(|entry| entry.path.as_str())
+            } else {
+                view.selected
+                    .as_deref()
+                    .filter(|path| model.files.contains_key(*path))
+            };
+            view.edit_requested = path.map(|path| model.root.join(path));
+            if view.edit_requested.is_none() {
+                model.apply(crate::model::Update::Notice(
+                    "Select a file to open in your editor".into(),
+                ));
+            }
+        }
         Char('q') => return true,
         Char('c') | Char('g') => {
             let command = if key.code == Char('c') {
@@ -569,20 +627,34 @@ fn handle_key(
             let down = matches!(key.code, Char('j') | Down);
             if view.panel_focus {
                 view.following = false;
-                let last = total(model, view).saturating_sub(1);
-                let target = if down {
-                    (view.scroll + view.cursor + 1).min(last)
-                } else {
-                    (view.scroll + view.cursor).saturating_sub(1)
-                };
-                let visible = height.saturating_sub(4).max(1);
-                if target < view.scroll {
-                    view.scroll = target;
+                let target_row = view.scroll + view.cursor;
+                let mut start = 0;
+                let mut previous = 0;
+                for entry in model
+                    .entries
+                    .iter()
+                    .rev()
+                    .filter(|entry| entry_matches(entry, view))
+                {
+                    let end = start + length(entry);
+                    if target_row < end {
+                        let target = if down && end < total(model, view) {
+                            end
+                        } else if down {
+                            start
+                        } else {
+                            previous
+                        };
+                        let visible = height.saturating_sub(4).max(1);
+                        if target < view.scroll || target >= view.scroll + visible {
+                            view.scroll = target;
+                        }
+                        view.cursor = target.saturating_sub(view.scroll);
+                        break;
+                    }
+                    previous = start;
+                    start = end;
                 }
-                if target >= view.scroll + visible {
-                    view.scroll = target + 1 - visible;
-                }
-                view.cursor = target.saturating_sub(view.scroll);
             } else {
                 let rows = tree(model, view);
                 if !rows.is_empty() {
@@ -1192,6 +1264,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
     }
     let footer = [
         (Action::Help, "help"),
+        (Action::Edit, "edit"),
         (Action::Search, "search"),
         (Action::Clear, "clear"),
         (Action::GitSnapshot, "HEAD"),
@@ -1221,7 +1294,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             String::new()
         }
     );
-    let searching = view.searching || !view.search.is_empty();
+    let searching = view.searching || (!view.search.is_empty() && model.notice.is_empty());
     let show_status = !status.trim().is_empty();
     let footer_line = if searching {
         Line::from(vec![
@@ -1286,6 +1359,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         frame.render_widget(Clear, popup);
         let groups: &[(&[Action], &str)] = &[
             (&[Action::Search], "Search file paths"),
+            (&[Action::Edit], "Open file in VISUAL / EDITOR"),
             (
                 &[Action::Clear],
                 "Clear history; compare from current contents",
@@ -1798,9 +1872,7 @@ mod tests {
         view.panel_focus = true;
         let (tx, _rx) = std::sync::mpsc::sync_channel(8);
         // Move into the second card even though both cards fit without scrolling.
-        for _ in 0..4 {
-            handle_key(KeyCode::Down.into(), &mut model, &mut view, &tx, 24);
-        }
+        handle_key(KeyCode::Down.into(), &mut model, &mut view, &tx, 24);
         assert_eq!(view.scroll, 0);
         assert_eq!(focused_history_entry(&model, &view).unwrap().id, 6);
         let mut terminal = Terminal::new(TestBackend::new(140, 24)).unwrap();
@@ -1850,6 +1922,65 @@ mod tests {
             .collect();
         assert!(text.contains("▶"));
         assert!(text.contains("Enter collapse • dir/file6.rs"));
+    }
+
+    #[test]
+    fn history_navigation_moves_one_entry_per_press_in_both_directions() {
+        let config = Config::parse_from(["recon", "--no-animations"]);
+        let mut model = history_model();
+        model.entries.back_mut().unwrap().line_count = 200;
+        model
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == 6)
+            .unwrap()
+            .collapsed = true;
+        let mut view = View::new();
+        view.panel_focus = true;
+        let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+        let mut terminal = Terminal::new(TestBackend::new(140, 24)).unwrap();
+        for (key, expected) in [
+            (KeyCode::Down, 6),
+            (KeyCode::Char('j'), 5),
+            (KeyCode::Up, 6),
+            (KeyCode::Char('k'), 7),
+            (KeyCode::Up, 7),
+        ] {
+            handle_key(key.into(), &mut model, &mut view, &tx, 24);
+            terminal
+                .draw(|frame| draw(frame, &model, &mut view, &config))
+                .unwrap();
+            assert_eq!(focused_history_entry(&model, &view).unwrap().id, expected);
+        }
+    }
+
+    #[test]
+    fn edit_targets_the_focused_file_and_ignores_tree_directories() {
+        let mut model = history_model();
+        model.root = std::path::PathBuf::from("repository");
+        let mut view = View::new();
+        let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+        view.selected = Some("dir/file0.rs".into());
+        handle_key(KeyCode::Char('e').into(), &mut model, &mut view, &tx, 24);
+        assert_eq!(
+            view.edit_requested.take(),
+            Some(model.root.join("dir/file0.rs"))
+        );
+        view.selected = Some("dir/".into());
+        handle_key(KeyCode::Char('e').into(), &mut model, &mut view, &tx, 24);
+        assert!(view.edit_requested.is_none());
+        view.panel_focus = true;
+        handle_key(KeyCode::Char('e').into(), &mut model, &mut view, &tx, 24);
+        assert_eq!(
+            view.edit_requested.take(),
+            Some(model.root.join("dir/file7.rs"))
+        );
+        assert_eq!(
+            Config::parse_from(["recon"])
+                .keybinds
+                .resolve(KeyCode::Char('e').into()),
+            Some(Action::Edit.event())
+        );
     }
 
     #[test]

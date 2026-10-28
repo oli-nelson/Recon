@@ -22,6 +22,7 @@ pub enum Action {
     Focus,
     ToggleHistory,
     Open,
+    Edit,
     PageDown,
     PageUp,
     HalfPageDown,
@@ -31,7 +32,7 @@ pub enum Action {
     Help,
 }
 impl Action {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Quit,
         Self::Clear,
         Self::GitSnapshot,
@@ -47,6 +48,7 @@ impl Action {
         Self::Focus,
         Self::ToggleHistory,
         Self::Open,
+        Self::Edit,
         Self::PageDown,
         Self::PageUp,
         Self::HalfPageDown,
@@ -72,6 +74,7 @@ impl Action {
             Self::Focus => &["Tab"],
             Self::ToggleHistory => &["d"],
             Self::Open => &["Enter"],
+            Self::Edit => &["e"],
             Self::PageDown => &["PageDown"],
             Self::PageUp => &["PageUp"],
             Self::HalfPageDown => &["Ctrl-d"],

@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod config;
+mod editor;
 pub mod engine;
 pub mod keybinds;
 pub mod model;

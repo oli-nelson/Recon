@@ -23,8 +23,8 @@ from [Releases](https://github.com/oli-nelson/Recon/releases), put `recon` (Wind
 [release operations and platform requirements](docs/RELEASES.md).
 
 Building from source requires Rust 1.88 or later and Git. Linked worktrees and repositories without a
-first commit are supported. No commands write, stage, reset, or commit repository
-contents. Recon takes its opening snapshot against HEAD, including staged,
+first commit are supported. Recon's watcher never writes, stages, resets, or commits
+repository contents. Recon takes its opening snapshot against HEAD, including staged,
 unstaged, and nonignored untracked files, comparing final working contents.
 
 | Key | Action |
@@ -39,6 +39,7 @@ unstaged, and nonignored untracked files, comparing final working contents.
 | `Tab` | Switch focus; switch panes in narrow terminals |
 | `d` | Hide / show history without losing its filter or reading position |
 | `Enter` | Open/focus selected file history; toggle directories or focused history entries |
+| `e` | Open the focused file in your editor |
 | `PageUp` / `PageDown` | Scroll history, pausing live follow |
 | `Ctrl-D` / `Ctrl-U` | Half-page down / up in the focused sidebar |
 | `f` | Toggle live following; resume at the newest entry at the top |
@@ -48,9 +49,19 @@ unstaged, and nonignored untracked files, comparing final working contents.
 When history has focus, an accent marker identifies the selected entry and the
 pane's bottom border names the file and expand/collapse action for Enter. The
 marker remains visible when the entry's header is scrolled offscreen. Movement
-keys move the selection through visible lines, scrolling at the pane edges.
+keys move directly between history entries, revealing the selected entry when it
+is offscreen. Page Up/Down and Ctrl-U/D scroll through long hunks.
 Brief background checks keep the watching indicator and shortcut footer stable;
 refresh progress appears only after 250 ms. Startup progress remains immediate.
+
+Press `e` on a file in the tree or on a history entry to open that file using
+`VISUAL`, then `EDITOR` if `VISUAL` is unset or blank. Without either, Recon uses
+`vi` on Unix/macOS or Notepad on Windows. Set the variable to an executable or a
+quoted command with arguments, such as `EDITOR='code --wait'`. Quote executable
+paths containing spaces when adding arguments, especially on Windows. Recon
+suspends its terminal UI while the editor runs, then resumes watching on exit;
+include your GUI editor's wait option to keep it suspended until editing finishes.
+Deleted files report a notice. The `edit` keybind can replace the default `e`.
 
 The header labels the active comparison as **HEAD** or **last clear
 (contents at last clear)**. A coloured newest-to-oldest age-dot legend appears
@@ -223,6 +234,7 @@ python3 scripts/memory_stress.py
 python3 scripts/smoke_ui.py --large
 python3 scripts/animation_smoke.py
 python3 scripts/config_smoke.py
+python3 scripts/editor_smoke.py             # Unix/macOS PTY with a fake editor
 ```
 
 Tests create disposable repositories and cover baseline transitions, repeated

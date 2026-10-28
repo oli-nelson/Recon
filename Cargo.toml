@@ -18,6 +18,7 @@ notify = "8"
 ratatui = "0.29"
 similar = "2"
 serde = { version = "1", features = ["derive"] }
+shlex = "2"
 toml = "0.8"
 tempfile = "3"
 
