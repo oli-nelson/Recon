@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='recon-ui-') as folder:
     config = pathlib.Path(folder, 'recon.toml')
     config.write_text('theme = "ashen"\n[keybinds]\nclear = ["x"]\ngit_snapshot = ["v"]\nquit = ["Ctrl-x"]\n')
     master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 160, 0, 0))
     process = subprocess.Popen([str(root / 'target/release/recon'), folder, '--no-animations', '--config', str(config)], stdin=slave, stdout=slave, stderr=slave, env={**os.environ, 'TERM':'xterm-256color'})
     os.close(slave)
     output = bytearray()
@@ -48,10 +48,10 @@ with tempfile.TemporaryDirectory(prefix='recon-ui-') as folder:
             collect(0.005)
         assert b'RECON' in output, output[-3000:]
         assert b'FPS' not in output, 'FPS label still visible'
-        assert b'Comparing: Git snapshot (HEAD)' in output
+        assert b'Comparing: HEAD' in output
         assert b'Age: newest' in output and b'oldest' in output
         assert b'Ctrl-x quit' in output
-        assert b'Opening Git snapshot' not in output, 'startup progress leaked into settled footer'
+        assert b'Opening HEAD comparison' not in output, 'startup progress leaked into settled footer'
         if args.large:
             assert b'REFRESHING' in output, 'expected an active startup refresh'
             output.clear()
@@ -81,7 +81,7 @@ with tempfile.TemporaryDirectory(prefix='recon-ui-') as folder:
         output.clear()
         os.write(master,b'c')
         collect()
-        assert b'manual clear point' not in output
+        assert b'last clear' not in output
         os.write(master,b'x')
         collect(0.3)
         # Resize forces a complete frame; incremental frames can split labels
@@ -89,16 +89,35 @@ with tempfile.TemporaryDirectory(prefix='recon-ui-') as folder:
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
         os.kill(process.pid, signal.SIGWINCH)
         collect()
-        assert b'manual clear point' in output, output[-3000:]
+        assert b'last clear' in output, output[-3000:]
+        # Even an unbound key or an otherwise unused mouse click dismisses the
+        # notice without consuming the input or leaving the hints hidden.
+        for event in [b'z', b'\x1b[<0;1;1M']:
+            os.write(master,b'x')
+            collect(0.2)
+            output.clear()
+            os.write(master,event)
+            collect(0.15)
+            fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 101, 0, 0))
+            os.kill(process.pid, signal.SIGWINCH)
+            collect()
+            assert b'x clear  v HEAD' in output, output[-3000:]
+            assert b'Cleared' not in output, output[-3000:]
+        # Expiry must redraw the hints even with animations disabled and no input.
+        os.write(master,b'x')
+        collect(0.2)
+        output.clear()
+        collect(3.1)
+        assert b'x clear  v HEAD' in output, output[-3000:]
         pathlib.Path(folder,'hello.txt').write_text('after clear\n')
         collect(0.4)
         output.clear()
         os.write(master,b'v')
         collect(0.3)
-        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 101, 0, 0))
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 102, 0, 0))
         os.kill(process.pid, signal.SIGWINCH)
         collect()
-        assert b'Git snapshot (HEAD)' in output, output[-3000:]
+        assert b'Comparing: HEAD' in output, output[-3000:]
         os.write(master,b'\x18')
         collect(0.3)
         assert process.wait(timeout=5) == 0, output[-3000:]

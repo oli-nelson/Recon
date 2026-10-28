@@ -66,7 +66,7 @@ fn edits_undo_delete_recreate_clear_and_git_reset() {
     fs::write(d.path().join("a.txt"), "one\n").unwrap();
     refresh(&mut e, &mut m);
     assert!(m.entries[2].diff.contains("-three"));
-    assert_eq!(m.files["a.txt"].status, Status::Unchanged);
+    assert!(!m.files.contains_key("a.txt"));
     fs::remove_file(d.path().join("a.txt")).unwrap();
     refresh(&mut e, &mut m);
     assert_eq!(m.files["a.txt"].status, Status::Deleted);
@@ -88,6 +88,45 @@ fn edits_undo_delete_recreate_clear_and_git_reset() {
     assert_eq!(m.entries.len(), 1);
     assert!(m.entries[0].diff.contains("-one"));
 }
+#[test]
+fn observed_root_is_discovered_from_a_subdirectory_and_survives_clear() {
+    let d = fixture();
+    let nested = d.path().join("nested/deep");
+    fs::create_dir_all(&nested).unwrap();
+    let config = Config::parse_from(["recon", nested.to_str().unwrap()]);
+    let mut engine = Engine::new(&config).unwrap();
+    let mut model = Model::new(10, 10240);
+    for clear in [false, true, false] {
+        reset(&mut engine, &mut model, clear);
+        assert_eq!(model.root, d.path().canonicalize().unwrap());
+    }
+}
+
+#[test]
+fn restored_deletion_leaves_the_tree_but_preserves_history() {
+    let d = fixture();
+    let (mut e, mut m) = setup(&d);
+    reset(&mut e, &mut m, false);
+    fs::remove_file(d.path().join("a.txt")).unwrap();
+    refresh(&mut e, &mut m);
+    assert_eq!(m.files["a.txt"].status, Status::Deleted);
+    assert_eq!(m.entries.len(), 1);
+    git(d.path(), &["restore", "a.txt"]);
+    refresh(&mut e, &mut m);
+    assert!(!m.files.contains_key("a.txt"));
+    assert!(m.modification_times.is_empty());
+    assert_eq!(m.entries.len(), 2);
+    assert!(m.entries[0].diff.contains("-one"));
+    assert!(m.entries[1].diff.contains("+one"));
+    refresh(&mut e, &mut m);
+    assert!(m.files.is_empty());
+    assert_eq!(m.entries.len(), 2);
+    fs::write(d.path().join("a.txt"), "edited again\n").unwrap();
+    refresh(&mut e, &mut m);
+    assert_eq!(m.files["a.txt"].status, Status::Modified);
+    assert_eq!(m.entries.len(), 3);
+}
+
 #[test]
 fn stage_only_no_duplicate_and_cancelled_index_explained() {
     let d = fixture();
@@ -213,6 +252,7 @@ fn linked_worktree_discovery() {
     let mut engine = Engine::new(&config).unwrap();
     let mut m = Model::new(10, 10240);
     engine.reset(false, "test", &mut |u| m.apply(u)).unwrap();
+    assert_eq!(m.root, path.canonicalize().unwrap());
     assert!(m.entries[0].diff.contains("+linked"));
 }
 

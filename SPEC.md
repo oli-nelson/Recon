@@ -20,7 +20,7 @@ affected files alongside an animated history of incoming diff hunks.
   discard edits, or alter Git history.
 - Display the current branch, active baseline (`HEAD` or the last clear), and
   refresh progress. Branch labels support unborn and detached HEAD states.
-- The Git snapshot shows final working-tree contents against `HEAD`, with
+- The HEAD comparison shows final working-tree contents against `HEAD`, with
   staged/unstaged status also visible. A file whose index changes cancel out in
   the working tree still appears with its Git status and an explanation when
   there is no net working-tree hunk.
@@ -34,13 +34,15 @@ affected files alongside an animated history of incoming diff hunks.
 - Modified files that are not yet visible fly in from the right and use a distinct
   modified-file color. Further edits briefly animate the existing row.
 - Editing a new file preserves its new-file color.
-- Deleted tracked files animate out toward the right, then leave a greyed-out
-  tombstone. Deleted untracked files leave the tree immediately.
+- Deleted tracked files leave a stationary grey tombstone underneath a coloured
+  copy that flies right and dissolves character by character. Deleted untracked
+  files leave the tree immediately.
 - Separate persistent status from transient activity: symbols and colors show
   status relative to the active baseline; brief animation highlights new activity.
-- Reverting to baseline preserves the file's historical entries and marks its row
-  as having no net change. Recreating a deleted file restores its live row, with
-  status determined relative to the baseline; deletion history remains visible.
+- Reverting to baseline preserves the file's historical entries and removes its
+  row when Git also reports no local changes. Recreating a deleted file restores
+  its live row only if it still differs from the baseline or has Git changes;
+  deletion history remains visible.
 - Keep paths in stable order, allow directory expansion/collapse, and preserve
   selection by file identity as other changes arrive.
 - A small file glyph shows recency ranked by observed filesystem modification
@@ -80,7 +82,8 @@ affected files alongside an animated history of incoming diff hunks.
   later file edits. Clearing/resetting discards history.
 - History is in memory for this instance; persistence is outside the first release.
   Eviction does not remove tree rows with a current net change. Rows with no net
-  change can disappear once no retained history references them.
+  change disappear when Git also reports no local changes, even with retained
+  history.
 
 ## Keyboard and navigation
 
@@ -123,7 +126,7 @@ accessible, and preserve navigation state across terminal resizes.
   Keep Git status current when staging or committing. Staging alone does not
   append a content-edit event.
 - On a branch switch or other `HEAD` change, mark the boundary and rebuild from a
-  fresh Git snapshot. Explain the automatic reset so baselines are not silently
+  fresh HEAD comparison. Explain the automatic reset so baselines are not silently
   mixed.
 - Recover from atomic saves, temporary removals, inaccessible files, and watcher
   overflow. Reconcile missed events and identify history gaps; do not invent

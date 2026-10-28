@@ -54,6 +54,10 @@ with tempfile.TemporaryDirectory(prefix='recon-motion-') as folder:
                 assert count<=5,(mode,count)
             else:
                 assert count>=3,(fps,count)
+            # Recovery warnings now animate as three-second notifications.
+            # Allow their lifetime to finish before checking settled redraws.
+            if b'RECOVERY ONLY' in initial+frames:
+                collect(2.2)
             idle=collect(.3)
             assert b'\x1b[?2026h' not in idle,'idle redrawing continued after activity settled'
             all_output=initial+frames+idle

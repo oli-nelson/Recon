@@ -16,6 +16,7 @@ fn main() -> Result<()> {
             model.baseline,
             model.files.len()
         );
+        println!("Root: {}", model.root.display());
         for row in model.files.values() {
             println!(
                 "{} [{}] {} {}",

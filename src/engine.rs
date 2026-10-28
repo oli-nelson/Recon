@@ -88,6 +88,7 @@ impl Engine {
         self.branch = branch.clone();
         self.statuses = statuses;
         emit(Update::Reset {
+            root: self.repo.root.clone(),
             baseline: if clear { "last clear" } else { "HEAD" }.into(),
             reason: reason.into(),
             branch,
@@ -132,7 +133,7 @@ impl Engine {
                 .collect();
             return self.reset(
                 false,
-                "HEAD changed • automatic fresh Git snapshot; previous baseline/history discarded",
+                "HEAD changed • comparison refreshed; previous baseline/history discarded",
                 emit,
             );
         }

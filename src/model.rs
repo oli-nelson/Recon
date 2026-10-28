@@ -1,8 +1,11 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    path::PathBuf,
     sync::Arc,
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
+
+const NOTICE_LIFETIME: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -49,6 +52,7 @@ impl Entry {
 #[derive(Debug)]
 pub enum Update {
     Reset {
+        root: PathBuf,
         baseline: String,
         reason: String,
         branch: String,
@@ -68,6 +72,7 @@ pub enum Command {
 }
 
 pub struct Model {
+    pub root: PathBuf,
     pub files: BTreeMap<String, FileRow>,
     pub entries: VecDeque<Entry>,
     pub bytes: usize,
@@ -78,6 +83,7 @@ pub struct Model {
     pub message: String,
     pub refreshing: bool,
     pub notice: String,
+    notice_until: Option<Instant>,
     pub watch_status: Option<String>,
     limit_entries: usize,
     limit_bytes: usize,
@@ -85,6 +91,7 @@ pub struct Model {
 impl Model {
     pub fn new(entries: usize, bytes: usize) -> Self {
         Self {
+            root: PathBuf::new(),
             files: BTreeMap::new(),
             entries: VecDeque::new(),
             bytes: 0,
@@ -95,18 +102,50 @@ impl Model {
             message: "Reading repository…".into(),
             refreshing: true,
             notice: String::new(),
+            notice_until: None,
             watch_status: None,
             limit_entries: entries,
             limit_bytes: bytes,
         }
     }
+    fn set_notice(&mut self, message: String) {
+        self.notice_until = (!message.is_empty()).then(|| Instant::now() + NOTICE_LIFETIME);
+        self.notice = message;
+    }
+
+    pub fn dismiss_notice(&mut self) -> bool {
+        let visible = !self.notice.is_empty();
+        self.notice.clear();
+        self.notice_until = None;
+        visible
+    }
+
+    pub fn notice_remaining(&self, now: Instant) -> Option<f64> {
+        if self.refreshing {
+            return None;
+        }
+        self.notice_until.map(|deadline| {
+            (deadline.saturating_duration_since(now).as_secs_f64() / NOTICE_LIFETIME.as_secs_f64())
+                .clamp(0.0, 1.0)
+        })
+    }
+
+    pub fn expire_notice(&mut self, now: Instant) -> bool {
+        if !self.refreshing && self.notice_until.is_some_and(|deadline| now >= deadline) {
+            return self.dismiss_notice();
+        }
+        false
+    }
+
     pub fn apply(&mut self, update: Update) {
         match update {
             Update::Reset {
+                root,
                 baseline,
                 reason,
                 branch,
             } => {
+                self.root = root;
                 self.branch = branch;
                 self.files.clear();
                 self.entries.clear();
@@ -114,7 +153,7 @@ impl Model {
                 self.modification_times.clear();
                 self.evicted = 0;
                 self.baseline = baseline;
-                self.notice = reason.clone();
+                self.set_notice(reason.clone());
                 self.message = reason;
                 self.refreshing = true;
             }
@@ -174,13 +213,9 @@ impl Model {
                         break;
                     }
                 }
-                let retained: std::collections::HashSet<_> =
-                    self.entries.iter().map(|e| e.path.as_str()).collect();
                 let times = &mut self.modification_times;
-                self.files.retain(|p, r| {
-                    let keep = r.status != Status::Unchanged
-                        || r.git != "  "
-                        || retained.contains(p.as_str());
+                self.files.retain(|_, r| {
+                    let keep = r.status != Status::Unchanged || !r.git.trim().is_empty();
                     if !keep {
                         remove_time(times, r.modified_at);
                     }
@@ -192,10 +227,13 @@ impl Model {
                 self.message = message;
             }
             Update::Notice(message) => {
-                self.notice = message.clone();
+                self.set_notice(message.clone());
                 self.message = message;
             }
-            Update::WatchStatus(message) => self.watch_status = Some(message),
+            Update::WatchStatus(message) => {
+                self.set_notice(message.clone());
+                self.watch_status = Some(message);
+            }
             Update::Done => self.refreshing = false,
         }
     }
@@ -215,6 +253,49 @@ fn remove_time(times: &mut BTreeMap<SystemTime, usize>, time: Option<SystemTime>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn notifications_expire_and_refreshes_do_not_extend_their_lifetime() {
+        let mut model = Model::new(10, 1024);
+        model.apply(Update::Notice("Cleared".into()));
+        let deadline = model.notice_until.unwrap();
+        model.apply(Update::Done);
+        assert_eq!(model.notice_until, Some(deadline));
+        assert_eq!(
+            model.notice_remaining(deadline - NOTICE_LIFETIME),
+            Some(1.0)
+        );
+        assert_eq!(
+            model.notice_remaining(deadline - NOTICE_LIFETIME / 2),
+            Some(0.5)
+        );
+        assert!(!model.expire_notice(deadline - Duration::from_millis(1)));
+        model.apply(Update::Progress("Refreshing".into()));
+        assert_eq!(model.notice_remaining(deadline), None);
+        assert!(!model.expire_notice(deadline));
+        model.apply(Update::Done);
+        assert_eq!(model.notice_until, Some(deadline));
+        assert!(model.expire_notice(deadline));
+        assert!(model.notice.is_empty());
+        assert_eq!(model.notice_remaining(deadline), None);
+        assert!(!model.expire_notice(deadline));
+    }
+
+    #[test]
+    fn dismissing_a_notice_does_not_resurrect_it_or_interrupt_progress() {
+        let mut model = Model::new(10, 1024);
+        model.apply(Update::Notice("Cleared".into()));
+        model.apply(Update::Progress("Refreshing".into()));
+        assert!(model.dismiss_notice());
+        assert!(model.refreshing);
+        assert_eq!(model.message, "Refreshing");
+        model.apply(Update::Done);
+        assert!(model.notice.is_empty());
+        assert_eq!(model.notice_remaining(Instant::now()), None);
+        assert!(!model.dismiss_notice());
+        model.apply(Update::Notice("New notification".into()));
+        assert!(model.notice_remaining(Instant::now()).unwrap() > 0.99);
+    }
+
     #[test]
     fn retention_preserves_live_rows_and_immutable_history() {
         let mut m = Model::new(1, 1024);

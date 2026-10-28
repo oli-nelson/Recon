@@ -122,7 +122,7 @@ fn run(mut engine: Engine, config: Config, commands: Receiver<Command>, tx: Sync
                 };
                 let result = match command {
                     Command::Clear => engine.reset(true, "Capturing session baseline…", &mut emit),
-                    Command::Git => engine.reset(false, "Reset to current Git snapshot", &mut emit),
+                    Command::Git => engine.reset(false, "Comparing against HEAD", &mut emit),
                     Command::Reconcile => engine.refresh(None, true, &mut emit),
                     Command::Quit => unreachable!(),
                 };

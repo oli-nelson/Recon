@@ -51,7 +51,8 @@ pub fn slide(
     }
     let t = progress(age, duration);
     let offset = if departing {
-        t.powi(3)
+        // Separate early so both the departing copy and the tombstone are visible.
+        1.0 - (1.0 - t).powi(3)
     } else {
         (-5.5 * t).exp() * ((6.8 * t).cos() + 0.35 * (6.8 * t).sin())
     };

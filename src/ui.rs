@@ -20,11 +20,13 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
         Block, BorderType, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph,
+        Widget,
     },
 };
 use std::{
@@ -264,14 +266,19 @@ pub fn run(config: &Config, worker: Worker) -> Result<()> {
                         .back()
                         .is_some_and(|e| e.time.elapsed().is_ok_and(|age| age < duration)));
             let active = active || (!config.no_animations && !view.arrivals.is_empty());
-            let animation =
-                (active || model.refreshing) && !config.reduced_motion && !config.no_animations;
+            let notice_visible = model.notice_remaining(Instant::now()).is_some()
+                && !view.searching
+                && view.search.is_empty();
+            let animation = (active || model.refreshing || notice_visible)
+                && !config.reduced_motion
+                && !config.no_animations;
             if was_active && !active {
                 dirty = true;
             }
             was_active = active;
             dirty |= animation;
             let now = Instant::now();
+            dirty |= model.expire_notice(now);
             if dirty && pacer.ready(now) {
                 execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
                 let rendered = terminal
@@ -284,7 +291,11 @@ pub fn run(config: &Config, worker: Worker) -> Result<()> {
                 dirty = false;
             }
             if event::poll(pacer.wait(Instant::now(), dirty || animation))? {
-                match event::read()? {
+                let input = event::read()?;
+                if matches!(&input, Event::Key(_) | Event::Mouse(_) | Event::Paste(_)) {
+                    dirty |= model.dismiss_notice();
+                }
+                match input {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         let height = terminal.size()?.height as usize;
                         let key = if view.searching || view.help {
@@ -613,7 +624,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
     let parts = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
         ])
@@ -647,64 +658,40 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
     let gold = palette.gold;
     let compact = frame.area().width < 72;
     let comparison = match (model.baseline.as_str(), compact) {
-        ("last clear", true) => "vs manual clear",
-        ("last clear", false) => "Comparing: manual clear point",
+        ("last clear", true) => "vs last clear",
+        ("last clear", false) => "Comparing: last clear",
         (_, true) => "vs HEAD",
-        (_, false) => "Comparing: Git snapshot (HEAD)",
+        (_, false) => "Comparing: HEAD",
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                " ◈ RECON │ ",
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                comparison,
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" │ {indicator} {state}"),
-                Style::default().fg(if model.refreshing { gold } else { positive }),
-            ),
-            Span::styled(format!(" │ {}", model.branch), Style::default().fg(muted)),
-        ])),
-        Rect::new(
-            parts[0].x,
-            parts[0].y,
-            parts[0].width,
-            parts[0].height.min(1),
+    let header = Line::from(vec![
+        Span::styled(
+            " ◈ RECON │ ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
         ),
-    );
-    let summary_row = Rect::new(
-        parts[0].x,
-        parts[0].y.saturating_add(1),
-        parts[0].width,
-        parts[0].height.saturating_sub(1),
-    );
-    let legend = age_legend(&palette, compact);
-    let summary = Layout::horizontal([
-        Constraint::Min(0),
-        Constraint::Length(legend.width() as u16),
-    ])
-    .split(summary_row);
-    let mut stats = vec![
-        Span::styled(format!(" +{} ", counts[0]), Style::default().fg(positive)),
-        Span::styled(format!("~{} ", counts[1]), Style::default().fg(gold)),
-        Span::styled(format!("−{} ", counts[2]), Style::default().fg(negative)),
-        Span::styled(format!("·{}", counts[3]), Style::default().fg(muted)),
-    ];
-    if !compact {
-        stats.push(Span::styled(
-            format!(
-                " │ {} entries · {:.1} MiB",
-                model.entries.len(),
-                model.bytes as f64 / 1048576.
-            ),
-            Style::default().fg(muted),
-        ));
+        Span::styled(
+            comparison,
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" │ {indicator} {state}"),
+            Style::default().fg(if model.refreshing { gold } else { positive }),
+        ),
+        Span::styled(format!(" │ {}", model.branch), Style::default().fg(muted)),
+    ]);
+    let legend = age_legend(&palette, false);
+    // Measure the actual branch/status text before reserving the legend's space.
+    // Hide it entirely rather than clipping either the header or the example.
+    let legend_width = if header.width() + 2 + legend.width() <= parts[0].width as usize {
+        legend.width() as u16
+    } else {
+        0
+    };
+    let header_cols =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(legend_width)]).split(parts[0]);
+    frame.render_widget(Paragraph::new(header), header_cols[0]);
+    if legend_width > 0 {
+        frame.render_widget(Paragraph::new(legend), header_cols[1]);
     }
-    frame.render_widget(Paragraph::new(Line::from(stats)), summary[0]);
-    frame.render_widget(Paragraph::new(legend), summary[1]);
     let narrow = parts[1].width < 72;
     let tree_visible = !view.sidebar || !narrow || !view.panel_focus;
     let panel_visible = view.sidebar && (!narrow || view.panel_focus);
@@ -758,28 +745,26 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                         Status::Deleted | Status::Unchanged => muted,
                     };
                     let age = file.activity.elapsed();
-                    let motion_age = view.arrivals.get(&file.path).map_or(
-                        if file.status == Status::Deleted {
-                            age
-                        } else {
-                            duration
-                        },
-                        Instant::elapsed,
-                    );
+                    let motion_age = view
+                        .arrivals
+                        .get(&file.path)
+                        .map_or(duration, Instant::elapsed);
                     let distance = tree_rect.width.saturating_sub(12 + (r.depth as u16) * 2);
                     let motion = animation::slide(
                         motion_age,
                         duration,
                         !config.no_animations && !config.reduced_motion,
-                        file.status == Status::Deleted,
+                        false,
                         distance,
                     );
-                    let active = age < duration && !config.no_animations;
+                    let deleted = file.status == Status::Deleted;
+                    let motion = if deleted { 0 } else { motion };
+                    let active = age < duration && !config.no_animations && !deleted;
                     let color = animation::glow(
                         color,
                         age,
                         duration,
-                        !config.no_animations && !config.reduced_motion,
+                        !config.no_animations && !config.reduced_motion && !deleted,
                         light,
                     );
                     let git_status: String = file.git.chars().take(2).collect();
@@ -820,9 +805,37 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                 }
             })
             .collect();
+        let mut stats = vec![
+            Span::styled(format!(" +{} ", counts[0]), Style::default().fg(positive)),
+            Span::styled(format!("~{} ", counts[1]), Style::default().fg(gold)),
+            Span::styled(format!("−{} ", counts[2]), Style::default().fg(negative)),
+            Span::styled(format!("·{}", counts[3]), Style::default().fg(muted)),
+        ];
+        if tree_rect.width >= 85 {
+            stats.push(Span::styled(
+                format!(
+                    " │ {} entries · {:.1} MiB",
+                    model.entries.len(),
+                    model.bytes as f64 / 1048576.
+                ),
+                Style::default().fg(muted),
+            ));
+        }
+        let stats_width = Line::from(stats.clone()).width();
+        let available = usize::from(tree_rect.width.saturating_sub(2));
+        let root_label = " │ Root: ";
+        let root = tail_path(
+            &model.root.display().to_string(),
+            available.saturating_sub(stats_width + Line::raw(root_label).width() + 1),
+        );
+        stats.push(Span::styled(
+            format!("{root_label}{root} "),
+            Style::default().fg(muted),
+        ));
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Files ")
+            .title_bottom(Line::from(stats))
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(if !view.panel_focus { accent } else { muted }));
         let list = List::new(items)
@@ -835,6 +848,48 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             .with_selected(selected);
         frame.render_stateful_widget(list, tree_rect, &mut state);
         view.tree_offset = state.offset();
+        // Keep the muted tombstone in place while a coloured copy departs over it.
+        // Render only the label so Git status, recency, and tree guides stay fixed.
+        if !config.no_animations && !config.reduced_motion {
+            let inner = inset(tree_rect);
+            for (index, row) in rows
+                .iter()
+                .skip(state.offset())
+                .take(inner.height as usize)
+                .enumerate()
+                .filter(|(_, row)| !row.dir)
+            {
+                let file = &model.files[&row.key];
+                let age = file.activity.elapsed();
+                if file.status != Status::Deleted || age >= duration {
+                    continue;
+                }
+                let distance = tree_rect.width.saturating_sub(12 + row.depth as u16 * 2);
+                // A short flight leaves room to watch the copy dissolve even
+                // when the tree pane is narrow.
+                let motion = animation::slide(age, duration, true, true, distance.min(16)) as u16;
+                // List reserves two cells for the selection marker, then six for
+                // Git status/recency, followed by indentation and label padding.
+                let x = inner.x.saturating_add(10 + row.depth as u16 * 2 + motion);
+                let right = inner.right();
+                if x >= right {
+                    continue;
+                }
+                let name = row.key.rsplit('/').next().unwrap_or(&row.key);
+                let color = animation::glow(negative, age, duration, true, light);
+                let mut style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+                if selected == Some(state.offset() + index) {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                }
+                render_departing_label(
+                    &format!("− {name}"),
+                    style,
+                    animation::progress(age, duration),
+                    Rect::new(x, inner.y + index as u16, right - x, 1),
+                    frame.buffer_mut(),
+                );
+            }
+        }
         if rows.is_empty() {
             frame.render_widget(
                 Paragraph::new(if view.search.is_empty() {
@@ -1004,7 +1059,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         if count == 0 {
             frame.render_widget(
                 Paragraph::new(format!(
-                    " Waiting for observed changes…\n {} clear point   {} Git snapshot",
+                    " Waiting for observed changes…\n {} clear   {} HEAD",
                     config.keybinds.label(Action::Clear),
                     config.keybinds.label(Action::GitSnapshot)
                 ))
@@ -1016,8 +1071,8 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
     let footer = [
         (Action::Help, "help"),
         (Action::Search, "search"),
-        (Action::Clear, "clear point"),
-        (Action::GitSnapshot, "Git snapshot"),
+        (Action::Clear, "clear"),
+        (Action::GitSnapshot, "HEAD"),
         (Action::ToggleHistory, "panel"),
         (Action::Focus, "focus"),
         (Action::Quit, "quit"),
@@ -1028,9 +1083,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
     .join("  ");
     let status = format!(
         " {}{}{}",
-        if let Some(warning) = &model.watch_status {
-            warning
-        } else if model.refreshing {
+        if model.refreshing {
             &model.message
         } else {
             &model.notice
@@ -1069,7 +1122,15 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             ),
         ])
     } else if show_status {
-        Line::styled(status, Style::default().fg(accent))
+        if !config.no_animations && !config.reduced_motion {
+            if let Some(remaining) = model.notice_remaining(Instant::now()) {
+                notification_line(&status, remaining, accent, muted)
+            } else {
+                Line::styled(status, Style::default().fg(accent))
+            }
+        } else {
+            Line::styled(status, Style::default().fg(accent))
+        }
     } else {
         Line::styled(footer, Style::default().fg(muted))
     };
@@ -1107,7 +1168,10 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                 &[Action::Clear],
                 "Clear history; compare from current contents",
             ),
-            (&[Action::GitSnapshot], "Fresh Git snapshot against HEAD"),
+            (
+                &[Action::GitSnapshot],
+                "Clear history; compare against HEAD",
+            ),
             (&[Action::ToggleHistory], "Hide/show history"),
             (&[Action::Focus], "Switch focus / narrow-terminal view"),
             (&[Action::Down, Action::Up], "Navigate / scroll down/up"),
@@ -1168,6 +1232,25 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         );
     }
 }
+/// The accent-coloured portion drains from right to left with a soft edge;
+/// expired characters remain readable in the muted colour until dismissal.
+fn notification_line(message: &str, remaining: f64, accent: Color, muted: Color) -> Line<'static> {
+    let span = Span::raw(message);
+    let width = span.width().max(1) as f64;
+    let mut column = 0;
+    let spans = span.styled_graphemes(Style::default()).map(|grapheme| {
+        let cells = Span::raw(grapheme.symbol).width();
+        let position = (column as f64 + cells as f64 / 2.0) / width;
+        column += cells;
+        let fade = ((position - remaining) / 0.15 + 1.0 - remaining).clamp(0.0, 1.0);
+        Span::styled(
+            grapheme.symbol.to_owned(),
+            Style::default().fg(animation::gradient(fade, [accent, accent, muted, muted])),
+        )
+    });
+    Line::from(spans.collect::<Vec<_>>())
+}
+
 fn age_legend(palette: &crate::theme::Palette, compact: bool) -> Line<'static> {
     let mut spans = vec![Span::styled(
         if compact {
@@ -1195,6 +1278,61 @@ fn age_legend(palette: &crate::theme::Palette, compact: bool) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Disappearing glyphs are transparent: they reveal the tombstone rather
+/// than painting spaces over it. Rasterizing first preserves wide/combining text.
+fn render_departing_label(
+    label: &str,
+    style: Style,
+    progress: f64,
+    area: Rect,
+    buffer: &mut Buffer,
+) {
+    let mut copy = Buffer::empty(area);
+    Line::from(Span::styled(label, style)).render(area, &mut copy);
+    let dissolve = ((progress - 0.45) / 0.5).clamp(0.0, 1.0);
+    let mut x = area.x;
+    while x < area.right() {
+        let cell = &copy[(x, area.y)];
+        let width = Span::raw(cell.symbol()).width().max(1) as u16;
+        // Stable, scattered thresholds keep the effect smooth between frames
+        // and avoid making an entire filename disappear in one step.
+        let threshold = ((usize::from(x - area.x) * 37 + 17) % 101) as f64 / 100.0;
+        if cell.symbol() != " " && (dissolve == 0.0 || dissolve < threshold) {
+            for dx in 0..width.min(area.right() - x) {
+                buffer[(x + dx, area.y)] = copy[(x + dx, area.y)].clone();
+            }
+        }
+        x = x.saturating_add(width);
+    }
+}
+
+/// Shorten from the left without splitting terminal grapheme clusters.
+fn tail_path(path: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let span = Span::raw(path);
+    if span.width() <= width {
+        return path.to_owned();
+    }
+    let graphemes: Vec<_> = span.styled_graphemes(Style::default()).collect();
+    let mut used = 1; // ellipsis
+    let mut start = graphemes.len();
+    for (index, grapheme) in graphemes.iter().enumerate().rev() {
+        let next = Span::raw(grapheme.symbol).width();
+        if used + next > width {
+            break;
+        }
+        used += next;
+        start = index;
+    }
+    let mut result = String::from("…");
+    for grapheme in &graphemes[start..] {
+        result.push_str(grapheme.symbol);
+    }
+    result
+}
+
 fn inset(r: Rect) -> Rect {
     Rect::new(
         r.x.saturating_add(1),
@@ -1210,6 +1348,78 @@ mod tests {
     use clap::Parser;
     use ratatui::backend::TestBackend;
     #[test]
+    fn notification_gradient_drains_without_changing_the_message_or_background() {
+        let message = "Cleared • observe 界e\u{301} changes";
+        let accent = Color::Rgb(200, 100, 50);
+        let muted = Color::Rgb(100, 100, 100);
+        for remaining in [1.0, 0.5, 0.0] {
+            let line = notification_line(message, remaining, accent, muted);
+            let text: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(text, message);
+            assert!(line.spans.iter().all(|span| span.style.bg.is_none()));
+            if remaining == 1.0 {
+                assert!(line.spans.iter().all(|span| span.style.fg == Some(accent)));
+            } else if remaining == 0.0 {
+                assert!(line.spans.iter().all(|span| span.style.fg == Some(muted)));
+            } else {
+                assert_eq!(line.spans.first().unwrap().style.fg, Some(accent));
+                assert_eq!(line.spans.last().unwrap().style.fg, Some(muted));
+                assert!(
+                    line.spans
+                        .iter()
+                        .any(|span| span.style.fg != Some(accent) && span.style.fg != Some(muted))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn expired_or_dismissed_notifications_restore_the_full_keybind_footer() {
+        let config = Config::parse_from(["recon", "--no-animations"]);
+        let mut model = Model::new(10, 1024);
+        model.apply(crate::model::Update::Done);
+        let mut view = View::new();
+        let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
+        let footer = |terminal: &Terminal<TestBackend>| -> String {
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(140)
+                .last()
+                .unwrap()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect()
+        };
+        for expire in [true, false] {
+            model.apply(crate::model::Update::Notice(
+                "Cleared demo notification".into(),
+            ));
+            terminal
+                .draw(|frame| draw(frame, &model, &mut view, &config))
+                .unwrap();
+            assert!(footer(&terminal).contains("Cleared demo notification"));
+            if expire {
+                assert!(model.expire_notice(Instant::now() + std::time::Duration::from_secs(4)));
+            } else {
+                assert!(model.dismiss_notice());
+            }
+            terminal
+                .draw(|frame| draw(frame, &model, &mut view, &config))
+                .unwrap();
+            let text = footer(&terminal);
+            assert!(text.contains("c clear"));
+            assert!(text.contains("g HEAD"));
+            assert!(!text.contains("Cleared demo notification"));
+        }
+    }
+
+    #[test]
     fn layouts_render_at_tiny_and_wide_sizes() {
         let config = Config::parse_from(["recon"]);
         for (w, h) in [(1, 1), (30, 10), (80, 24), (140, 40)] {
@@ -1223,6 +1433,45 @@ mod tests {
         }
     }
     #[test]
+    fn files_bottom_border_shows_counts_and_root_without_using_a_content_row() {
+        let config = Config::parse_from(["recon", "--no-animations"]);
+        let mut model = Model::new(100, 4096);
+        model.root = "/Users/oli/Development/long-parent-directory/界/recon".into();
+        for width in [30, 160] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+            let mut view = View::new();
+            view.sidebar = false;
+            terminal
+                .draw(|frame| draw(frame, &model, &mut view, &config))
+                .unwrap();
+            let line: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(width as usize)
+                .nth(10)
+                .unwrap()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(line.contains("+0"));
+            assert!(line.contains("~0"));
+            assert!(line.contains("Root: "));
+            assert!(line.contains("recon"));
+            assert_eq!(view.split_area.y, 1);
+            assert_eq!(view.split_area.height, 10);
+            if width == 160 {
+                assert!(line.contains("/Users/oli/Development/long-parent-directory/"));
+                assert!(line.contains('界'));
+                assert!(!line.contains('…'));
+            } else {
+                assert!(line.contains('…'));
+                assert!(!line.contains("/Users/oli"));
+            }
+        }
+    }
+
+    #[test]
     fn themes_show_matching_age_legend_baseline_and_configured_hints() {
         for theme in ["dark", "light", "ashen"] {
             let mut config = Config::parse_from(["recon", "--theme", theme, "--no-animations"]);
@@ -1233,7 +1482,7 @@ mod tests {
             .unwrap();
             let mut model = Model::new(100, 4096);
             let mut view = View::new();
-            let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(160, 24)).unwrap();
             for baseline in ["HEAD", "last clear"] {
                 model.baseline = baseline.into();
                 terminal
@@ -1242,19 +1491,20 @@ mod tests {
                 let buffer = terminal.backend().buffer();
                 let text: String = buffer.content.iter().map(|c| c.symbol()).collect();
                 assert!(text.contains(if baseline == "HEAD" {
-                    "Comparing: Git snapshot (HEAD)"
+                    "Comparing: HEAD"
                 } else {
-                    "Comparing: manual clear point"
+                    "Comparing: last clear"
                 }));
                 assert!(!text.contains("FPS"));
-                assert!(text.contains("Alt-c clear point"));
+                assert!(text.contains("Alt-c clear"));
                 assert!(text.contains("Ctrl-x quit"));
                 let dots: Vec<_> = buffer
                     .content
-                    .chunks(100)
-                    .nth(1)
+                    .chunks(160)
+                    .next()
                     .unwrap()
                     .iter()
+                    .skip(160 - age_legend(&config.theme.palette(), false).width())
                     .filter(|c| c.symbol() == "●")
                     .collect();
                 assert_eq!(dots.len(), 13);
@@ -1278,12 +1528,45 @@ mod tests {
         }
     }
     #[test]
+    fn top_right_age_legend_hides_when_it_would_crowd_the_header() {
+        let config = Config::parse_from(["recon", "--no-animations"]);
+        let mut model = Model::new(100, 4096);
+        model.refreshing = false;
+        let long_branch = format!("feature/{}", "x".repeat(80));
+        for (width, branch, visible) in [
+            (80, "main", false),
+            (160, "main", true),
+            (160, long_branch.as_str(), false),
+            (240, long_branch.as_str(), true),
+        ] {
+            model.branch = branch.into();
+            let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+            let mut view = View::new();
+            terminal
+                .draw(|frame| draw(frame, &model, &mut view, &config))
+                .unwrap();
+            let row: String = terminal.backend().buffer().content[..width as usize]
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(row.contains(branch));
+            assert_eq!(row.contains("Age:"), visible);
+            if visible {
+                assert!(row.ends_with("oldest (relative mtime) "));
+            }
+            assert_eq!(view.split_area.y, 1);
+        }
+    }
+
+    #[test]
     fn compact_chrome_keeps_content_and_status_visible_in_short_terminals() {
         let config = Config::parse_from(["recon", "--no-animations"]);
         let mut model = history_model();
         model.refreshing = false;
         model.baseline = "last clear".into();
-        model.watch_status = Some("Watcher unavailable; recovering".into());
+        model.apply(crate::model::Update::WatchStatus(
+            "Watcher unavailable; recovering".into(),
+        ));
         for (width, height) in [(36, 12), (100, 12), (100, 24)] {
             let mut view = View::new();
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1297,11 +1580,11 @@ mod tests {
                 .chunks(width as usize)
                 .map(|row| row.iter().map(|c| c.symbol()).collect())
                 .collect();
-            assert_eq!(view.split_area.y, 2);
-            assert_eq!(view.split_area.height, height - 3);
-            assert!(rows[0].contains("manual clear"));
-            assert!(rows[1].contains(if width < 72 { "old" } else { "oldest" }));
-            assert!(rows[4].contains("file0.rs"));
+            assert_eq!(view.split_area.y, 1);
+            assert_eq!(view.split_area.height, height - 2);
+            assert!(rows[0].contains("last clear"));
+            assert!(!rows[0].contains("Age:"));
+            assert!(rows[3].contains("file0.rs"));
             assert!(rows[height as usize - 1].contains("Watcher"));
             assert!(rows[height as usize - 1].contains("q quit"));
             view.searching = true;
@@ -1321,7 +1604,7 @@ mod tests {
                 .collect();
             assert!(footer.contains("/file"));
             assert!(footer.contains("q quit"));
-            assert_eq!(view.split_area.height, height - 3);
+            assert_eq!(view.split_area.height, height - 2);
         }
     }
     fn history_model() -> Model {
@@ -1580,7 +1863,7 @@ mod tests {
                 .buffer()
                 .content
                 .chunks(100)
-                .nth(4)
+                .nth(3)
                 .unwrap()
                 .iter()
                 .map(|c| c.symbol())
@@ -1610,6 +1893,140 @@ mod tests {
         assert_eq!(initial.find('M'), settled.find('M'));
         assert_eq!(spring.find('M'), settled.find('M'));
     }
+    #[test]
+    fn deletion_reveals_a_stationary_muted_row_beneath_the_departing_label() {
+        use std::time::Duration;
+
+        for theme in ["dark", "light", "ashen"] {
+            let mut config = Config::parse_from(["recon", "--theme", theme]);
+            config.animation_ms = 100_000;
+            let duration = Duration::from_millis(config.animation_ms);
+            let mut model = history_model();
+            let file = model.files.get_mut("dir/file0.rs").unwrap();
+            file.status = Status::Deleted;
+            file.git = " D".into();
+            file.activity = Instant::now() - duration.mul_f64(0.3);
+            let mut view = View::new();
+            view.sidebar = false;
+            view.selected = Some("dir/file0.rs".into());
+            let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+            terminal
+                .draw(|f| draw(f, &model, &mut view, &config))
+                .unwrap();
+            let row = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(100)
+                .nth(3)
+                .unwrap();
+            let text: String = row.iter().map(|cell| cell.symbol()).collect();
+            let base = text.find("− file0.rs").unwrap();
+            assert!(text[base + "− file0.rs".len()..].contains("− file0.rs"));
+            let base_cell = row.iter().position(|cell| cell.symbol() == "−").unwrap();
+            for cell in &row[base_cell..base_cell + 10] {
+                assert_eq!(cell.fg, config.theme.palette().muted);
+            }
+            let moving_cell = row.iter().rposition(|cell| cell.symbol() == "−").unwrap();
+            assert!(moving_cell > base_cell);
+            assert_ne!(row[moving_cell].fg, config.theme.palette().muted);
+            assert!(row[moving_cell].modifier.contains(Modifier::UNDERLINED));
+            assert!(row.iter().all(|cell| cell.bg == Color::Reset));
+
+            // Also exercise the normal split layout: the coloured copy must
+            // be clipped to the tree without disturbing the grey row or panel.
+            view.sidebar = true;
+            terminal
+                .draw(|f| draw(f, &model, &mut view, &config))
+                .unwrap();
+            let row = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(100)
+                .nth(3)
+                .unwrap();
+            for cell in &row[base_cell..base_cell + 10] {
+                assert_eq!(cell.fg, config.theme.palette().muted);
+            }
+            let divider = view.divider.unwrap() as usize;
+            assert!(
+                row[base_cell + 10..divider - 1]
+                    .iter()
+                    .any(|cell| cell.fg != config.theme.palette().muted && cell.symbol() != " ")
+            );
+            view.sidebar = false;
+
+            for (no_animations, reduced_motion, age) in [
+                (false, false, duration),
+                (true, false, Duration::ZERO),
+                (false, true, Duration::ZERO),
+            ] {
+                config.no_animations = no_animations;
+                config.reduced_motion = reduced_motion;
+                model.files.get_mut("dir/file0.rs").unwrap().activity = Instant::now() - age;
+                terminal
+                    .draw(|f| draw(f, &model, &mut view, &config))
+                    .unwrap();
+                let row = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(100)
+                    .nth(3)
+                    .unwrap();
+                let text: String = row.iter().map(|cell| cell.symbol()).collect();
+                assert_eq!(text.matches("− file0.rs").count(), 1);
+                assert_eq!(row[base_cell].symbol(), "−");
+                assert_eq!(row[base_cell].fg, config.theme.palette().muted);
+            }
+        }
+    }
+    #[test]
+    fn dissolving_glyphs_reveal_the_underlay_and_preserve_unicode_clusters() {
+        let area = Rect::new(0, 0, 30, 1);
+        let style = Style::default().fg(Color::Red);
+        let mut base = Buffer::empty(area);
+        Line::from(Span::styled(
+            "abcdefghijklmnopqrstuvwxyz",
+            Style::default().fg(Color::Gray),
+        ))
+        .render(area, &mut base);
+        let label = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let mut previous_count = 27;
+        for progress in [0.0, 0.5, 0.65, 0.8, 0.96] {
+            let mut buffer = base.clone();
+            render_departing_label(label, style, progress, area, &mut buffer);
+            let visible = buffer
+                .content
+                .iter()
+                .filter(|cell| cell.fg == Color::Red)
+                .count();
+            assert!(visible < previous_count);
+            if progress == 0.0 {
+                assert_eq!(visible, 26);
+            } else if progress < 0.95 {
+                assert!(visible > 0);
+            } else {
+                assert_eq!(buffer, base);
+            }
+            for (cell, underneath) in buffer.content.iter().zip(&base.content) {
+                if cell.fg != Color::Red {
+                    assert_eq!(cell, underneath);
+                }
+            }
+            previous_count = visible;
+        }
+        let mut buffer = base.clone();
+        render_departing_label("界e\u{301}", style, 0.0, area, &mut buffer);
+        assert_eq!(buffer[(0, 0)].symbol(), "界");
+        assert_eq!(buffer[(2, 0)].symbol(), "e\u{301}");
+        let narrow = Rect::new(0, 0, 1, 1);
+        let mut clipped = base.clone();
+        render_departing_label("界", style, 0.0, narrow, &mut clipped);
+        assert_eq!(clipped, base);
+    }
+
     #[test]
     fn newest_entries_are_at_top_and_prepending_preserves_paused_reading() {
         let mut model = history_model();
@@ -1644,7 +2061,7 @@ mod tests {
             .buffer()
             .content
             .chunks(140)
-            .nth(3)
+            .nth(2)
             .unwrap()
             .iter()
             .map(|c| c.symbol())

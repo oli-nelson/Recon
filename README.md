@@ -38,11 +38,17 @@ unstaged, and nonignored untracked files, comparing final working contents.
 | `Esc` | Show aggregate history |
 | `?` / `q` | Help / quit |
 
-The header labels the active comparison as **Git snapshot (HEAD)** or **manual clear
-point (contents at last clear)**, and shows a coloured newest-to-oldest age-dot
-legend. A two-row header and one-row footer leave the remaining height for files
-and history; narrow terminals use shorter labels. Progress, warnings, and search
-share the footer with help/quit hints. It also shows the current branch (or detached HEAD / unborn branch) and updates
+The header labels the active comparison as **HEAD** or **last clear
+(contents at last clear)**. A coloured newest-to-oldest age-dot legend appears
+at the top right only when it fits beside the full header text. The Files box's bottom border shows change counts and the observed Git
+root path, shortening long paths from the left to keep the repository name visible.
+Wide file panes also show entry counts and history size there. The single-row header
+and one-row footer leave the remaining height for files and history; narrow
+terminals use shorter labels. Progress, warnings, and search
+share the footer with help/quit hints. Notifications disappear after three seconds
+or immediately on keyboard, mouse, or paste input, restoring the keybind hints.
+An accent-to-muted gradient sweeps across notification text to show time remaining;
+reduced-motion and disabled-animation modes keep the text static. It also shows the current branch (or detached HEAD / unborn branch) and updates
 on branch switches, including switches between branches at the same commit.
 
 Tree symbols: `+` new, `~` modified, `−` deleted tombstone, `·` no net change.
@@ -67,7 +73,8 @@ Repeated saves record observed transitions. New entries appear above older entri
 live-follow stays at the top. Scroll down to read older history. While paused,
 incoming entries preserve your reading position by entry identity. Undo records a reverse edit. Events
 inside the debounce window coalesce; this is not a keystroke recorder. Files
-reverted to baseline stay in the tree while retained history references them.
+reverted to baseline leave the tree once Git also reports no local changes;
+their observed transitions remain readable in history.
 Deleted untracked files leave the tree immediately; their observed transitions
 remain readable in history. Recreating them restores their tree rows.
 HEAD changes automatically start a fresh snapshot with an explanatory boundary
