@@ -45,6 +45,8 @@ pub struct View {
     pub following: bool,
     pub scroll: usize,
     pub cursor: usize,
+    pub horizontal_scroll: u16,
+    horizontal_max: u16,
     pub help: bool,
     pub unseen: usize,
     pub tree_offset: usize,
@@ -79,6 +81,7 @@ struct SearchBackup {
     scroll: usize,
     following: bool,
     focus: bool,
+    cursor: usize,
     tree_offset: usize,
 }
 #[derive(Clone)]
@@ -131,6 +134,20 @@ fn entry_matches(entry: &crate::model::Entry, view: &View) -> bool {
                 .path
                 .to_lowercase()
                 .contains(&view.search.to_lowercase()))
+}
+
+fn focused_history_entry<'a>(model: &'a Model, view: &View) -> Option<&'a crate::model::Entry> {
+    let mut row = 0;
+    let target = view.scroll + view.cursor;
+    model
+        .entries
+        .iter()
+        .rev()
+        .filter(|e| entry_matches(e, view))
+        .find(|entry| {
+            row += length(entry);
+            target < row
+        })
 }
 
 fn total(model: &Model, view: &View) -> usize {
@@ -208,6 +225,7 @@ pub fn run(config: &Config, worker: Worker) -> Result<()> {
     let mut dirty = true;
     let mut pacer = FramePacer::new(config.fps, Instant::now());
     let mut was_active = false;
+    let mut was_refresh_visible = false;
     let result = (|| -> Result<()> {
         loop {
             let before = model.entries.back().map(|e| e.id);
@@ -218,6 +236,7 @@ pub fn run(config: &Config, worker: Worker) -> Result<()> {
                 if matches!(update, crate::model::Update::Reset { .. }) {
                     view.filter = None;
                     view.scroll = 0;
+                    view.cursor = 0;
                     view.following = true;
                     view.anchor = None;
                     view.unseen = 0;
@@ -269,7 +288,10 @@ pub fn run(config: &Config, worker: Worker) -> Result<()> {
             let notice_visible = model.notice_remaining(Instant::now()).is_some()
                 && !view.searching
                 && view.search.is_empty();
-            let animation = (active || model.refreshing || notice_visible)
+            let refresh_visible = model.refresh_visible(Instant::now());
+            dirty |= refresh_visible != was_refresh_visible;
+            was_refresh_visible = refresh_visible;
+            let animation = (active || refresh_visible || notice_visible)
                 && !config.reduced_motion
                 && !config.no_animations;
             if was_active && !active {
@@ -396,6 +418,7 @@ fn handle_key(
                     view.scroll = old.scroll;
                     view.following = old.following;
                     view.panel_focus = old.focus;
+                    view.cursor = old.cursor;
                     view.tree_offset = old.tree_offset;
                 }
             }
@@ -448,6 +471,7 @@ fn handle_key(
                 scroll: view.scroll,
                 following: view.following,
                 focus: view.panel_focus,
+                cursor: view.cursor,
                 tree_offset: view.tree_offset,
             });
             view.searching = true;
@@ -476,7 +500,7 @@ fn handle_key(
                 Command::Git
             };
             if commands.try_send(command).is_ok() {
-                model.refreshing = true;
+                model.begin_refresh();
                 model.message = "Requested baseline refresh…".into();
             } else {
                 model.message = "Refresh queue busy; retry shortly".into();
@@ -501,12 +525,15 @@ fn handle_key(
             view.filter = None;
             view.following = true;
             view.scroll = 0;
+            view.cursor = 0;
             view.unseen = 0;
         }
         Char('f') => {
             view.following = !view.following;
             if view.following {
                 view.unseen = 0;
+                view.scroll = 0;
+                view.cursor = 0;
             }
         }
         PageUp | PageDown => {
@@ -518,31 +545,44 @@ fn handle_key(
             }
         }
         Enter if view.panel_focus => {
-            let mut offset = 0;
-            for e in model
+            let target = focused_history_entry(model, view).map(|entry| entry.id);
+            let mut start = 0;
+            for entry in model
                 .entries
                 .iter_mut()
                 .rev()
-                .filter(|e| entry_matches(e, view))
+                .filter(|entry| entry_matches(entry, view))
             {
-                let len = length(e);
-                if view.scroll + view.cursor < offset + len {
-                    e.collapsed = !e.collapsed;
+                if Some(entry.id) == target {
+                    entry.collapsed = !entry.collapsed;
                     view.following = false;
+                    if start < view.scroll {
+                        view.scroll = start;
+                    }
+                    view.cursor = start.saturating_sub(view.scroll);
                     break;
                 }
-                offset += len;
+                start += length(entry);
             }
         }
         Char('j') | Down | Char('k') | Up => {
             let down = matches!(key.code, Char('j') | Down);
             if view.panel_focus {
                 view.following = false;
-                if down {
-                    view.scroll = (view.scroll + 1).min(total(model, view).saturating_sub(page));
+                let last = total(model, view).saturating_sub(1);
+                let target = if down {
+                    (view.scroll + view.cursor + 1).min(last)
                 } else {
-                    view.scroll = view.scroll.saturating_sub(1);
+                    (view.scroll + view.cursor).saturating_sub(1)
+                };
+                let visible = height.saturating_sub(4).max(1);
+                if target < view.scroll {
+                    view.scroll = target;
                 }
+                if target >= view.scroll + visible {
+                    view.scroll = target + 1 - visible;
+                }
+                view.cursor = target.saturating_sub(view.scroll);
             } else {
                 let rows = tree(model, view);
                 if !rows.is_empty() {
@@ -564,7 +604,17 @@ fn handle_key(
                 }
             }
         }
-        Char('h') | Left | Char('l') | Right | Enter => {
+        Char('h') | Left | Char('l') | Right if view.panel_focus => {
+            if matches!(key.code, Char('l') | Right) {
+                view.horizontal_scroll = view
+                    .horizontal_scroll
+                    .saturating_add(1)
+                    .min(view.horizontal_max);
+            } else {
+                view.horizontal_scroll = view.horizontal_scroll.saturating_sub(1);
+            }
+        }
+        Char('h') | Left | Char('l') | Right | Enter if !view.panel_focus => {
             let rows = tree(model, view);
             if let Some(index) = view
                 .selected
@@ -604,6 +654,7 @@ fn select(view: &mut View, row: &TreeRow) {
         view.filter = Some(row.key.clone());
         view.following = true;
         view.scroll = 0;
+        view.cursor = 0;
         view.unseen = 0;
     }
 }
@@ -629,7 +680,8 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             Constraint::Length(1),
         ])
         .split(frame.area());
-    let state = if model.refreshing {
+    let refresh_visible = model.refresh_visible(Instant::now());
+    let state = if refresh_visible {
         "REFRESHING"
     } else if model.watch_status.is_some() {
         "RECOVERY ONLY"
@@ -639,7 +691,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
     let phase = view
         .started
         .map_or(0, |start| start.elapsed().as_millis() / 80);
-    let indicator = if model.refreshing && !config.no_animations && !config.reduced_motion {
+    let indicator = if refresh_visible && !config.no_animations && !config.reduced_motion {
         ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][phase as usize % 10]
     } else {
         "●"
@@ -674,7 +726,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         ),
         Span::styled(
             format!(" │ {indicator} {state}"),
-            Style::default().fg(if model.refreshing { gold } else { positive }),
+            Style::default().fg(if refresh_visible { gold } else { positive }),
         ),
         Span::styled(format!(" │ {}", model.branch), Style::default().fg(muted)),
     ]);
@@ -921,7 +973,22 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                 String::new()
             }
         );
-        let block = Block::default()
+        let height = panel_rect.height.saturating_sub(2) as usize;
+        let count = total(model, view);
+        if view.following {
+            view.scroll = 0;
+            view.cursor = 0;
+        }
+        let target = (view.scroll + view.cursor).min(count.saturating_sub(1));
+        view.scroll = view.scroll.min(count.saturating_sub(height));
+        view.cursor = target
+            .saturating_sub(view.scroll)
+            .min(height.saturating_sub(1));
+        let focused = view
+            .panel_focus
+            .then(|| focused_history_entry(model, view))
+            .flatten();
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .title(title)
             .border_type(BorderType::Rounded)
@@ -930,15 +997,26 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             } else {
                 muted
             }));
+        if let Some(entry) = focused {
+            block = block.title_bottom(Line::styled(
+                format!(
+                    " {} {} • {} ",
+                    config.keybinds.label(Action::Open),
+                    if entry.collapsed {
+                        "expand"
+                    } else {
+                        "collapse"
+                    },
+                    entry.path
+                ),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ));
+        }
+        let focused_id = focused.map(|entry| entry.id);
         let inner = block.inner(panel_rect);
         frame.render_widget(block, panel_rect);
-        let height = inner.height as usize;
-        let count = total(model, view);
-        if view.following {
-            view.scroll = 0;
-        }
-        view.scroll = view.scroll.min(count.saturating_sub(height));
         let mut lines = Vec::new();
+        let mut focus_rows = Vec::new();
         let mut row = 0;
         for entry in model
             .entries
@@ -1021,11 +1099,8 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                     if absolute >= view.scroll && absolute < view.scroll + height {
                         lines.push((
                             absolute - view.scroll,
-                            Line::from(vec![
-                                Span::raw(shift.clone()),
-                                Span::styled("│ ", Style::default().fg(muted)),
-                                Span::styled(line.to_owned(), Style::default().fg(color)),
-                            ]),
+                            Line::styled(line.to_owned(), Style::default().fg(color)),
+                            Some(shift.len() as u16 + 2),
                         ));
                     }
                 }
@@ -1033,7 +1108,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             for (i, line) in local.into_iter().enumerate() {
                 let absolute = row + i;
                 if absolute >= view.scroll && absolute < view.scroll + height {
-                    lines.push((absolute - view.scroll, line));
+                    lines.push((absolute - view.scroll, line, None));
                 }
             }
             if !entry.collapsed {
@@ -1045,15 +1120,62 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                             format!("{shift}╰────────────────"),
                             Style::default().fg(muted),
                         ),
+                        None,
                     ));
+                }
+            }
+            if focused_id == Some(entry.id) && inner.width > 0 {
+                let start = row.max(view.scroll);
+                let end = (row + n).min(view.scroll + height);
+                for absolute in start..end {
+                    focus_rows.push((absolute - view.scroll, absolute == start));
                 }
             }
             row += n;
         }
-        for (y, line) in lines {
+        view.horizontal_max = lines
+            .iter()
+            .filter_map(|(_, line, indent)| {
+                indent.map(|indent| {
+                    line.width()
+                        .saturating_sub(inner.width.saturating_sub(indent) as usize)
+                })
+            })
+            .max()
+            .unwrap_or(0)
+            .min(u16::MAX as usize) as u16;
+        view.horizontal_scroll = view.horizontal_scroll.min(view.horizontal_max);
+        for (y, line, indent) in lines {
+            let area = Rect::new(inner.x, inner.y + y as u16, inner.width, 1);
+            if let Some(indent) = indent {
+                frame.render_widget(
+                    Paragraph::new(format!(
+                        "{}│ ",
+                        " ".repeat(indent.saturating_sub(2) as usize)
+                    ))
+                    .style(Style::default().fg(muted)),
+                    area,
+                );
+                let indent = indent.min(inner.width);
+                let width = inner.width - indent;
+                let line = if view.horizontal_scroll == 0 {
+                    line
+                } else {
+                    horizontal_slice(&line, view.horizontal_scroll, width)
+                };
+                frame.render_widget(
+                    Paragraph::new(line),
+                    Rect::new(inner.x + indent, area.y, width, 1),
+                );
+            } else {
+                frame.render_widget(Paragraph::new(line), area);
+            }
+        }
+        for (row, first) in focus_rows {
             frame.render_widget(
-                Paragraph::new(line),
-                Rect::new(inner.x, inner.y + y as u16, inner.width, 1),
+                Paragraph::new(if first { "▶" } else { "┃" })
+                    .style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+                Rect::new(inner.x, inner.y + row as u16, 1, 1),
             );
         }
         if count == 0 {
@@ -1083,7 +1205,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
     .join("  ");
     let status = format!(
         " {}{}{}",
-        if model.refreshing {
+        if refresh_visible {
             &model.message
         } else {
             &model.notice
@@ -1177,7 +1299,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             (&[Action::Down, Action::Up], "Navigate / scroll down/up"),
             (
                 &[Action::Collapse, Action::Expand],
-                "Collapse/expand directory",
+                "Files: fold/unfold; history: scroll sideways",
             ),
             (
                 &[Action::WidenHistory, Action::NarrowHistory],
@@ -1232,6 +1354,37 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         );
     }
 }
+/// Slice in terminal columns without splitting wide or combining graphemes.
+/// A partially hidden wide glyph leaves blank cells at the left edge.
+fn horizontal_slice(line: &Line<'_>, offset: u16, width: u16) -> Line<'static> {
+    let mut skip = offset as usize;
+    let mut used = 0;
+    let mut spans = Vec::new();
+    for grapheme in line.styled_graphemes(line.style) {
+        let cells = Span::raw(grapheme.symbol).width();
+        if skip >= cells {
+            skip -= cells;
+            continue;
+        }
+        if skip > 0 {
+            let padding = cells - skip;
+            if padding > width as usize {
+                break;
+            }
+            spans.push(Span::styled(" ".repeat(padding), grapheme.style));
+            used += padding;
+            skip = 0;
+            continue;
+        }
+        if used + cells > width as usize {
+            break;
+        }
+        spans.push(Span::styled(grapheme.symbol.to_owned(), grapheme.style));
+        used += cells;
+    }
+    Line::from(spans)
+}
+
 /// The accent-coloured portion drains from right to left with a soft edge;
 /// expired characters remain readable in the muted colour until dismissal.
 fn notification_line(message: &str, remaining: f64, accent: Color, muted: Color) -> Line<'static> {
@@ -1635,6 +1788,166 @@ mod tests {
         }
         model.apply(crate::model::Update::Files(rows));
         model
+    }
+    #[test]
+    fn history_selection_marks_the_exact_enter_target_and_survives_folding() {
+        let config = Config::parse_from(["recon", "--no-animations"]);
+        let mut model = history_model();
+        model.apply(crate::model::Update::Done);
+        let mut view = View::new();
+        view.panel_focus = true;
+        let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+        // Move into the second card even though both cards fit without scrolling.
+        for _ in 0..4 {
+            handle_key(KeyCode::Down.into(), &mut model, &mut view, &tx, 24);
+        }
+        assert_eq!(view.scroll, 0);
+        assert_eq!(focused_history_entry(&model, &view).unwrap().id, 6);
+        let mut terminal = Terminal::new(TestBackend::new(140, 24)).unwrap();
+        for collapsed in [false, true] {
+            terminal
+                .draw(|frame| draw(frame, &model, &mut view, &config))
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains("▶"));
+            assert!(text.contains(if collapsed {
+                "Enter expand • dir/file6.rs"
+            } else {
+                "Enter collapse • dir/file6.rs"
+            }));
+            handle_key(KeyCode::Enter.into(), &mut model, &mut view, &tx, 24);
+            assert_eq!(
+                model
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == 6)
+                    .unwrap()
+                    .collapsed,
+                !collapsed
+            );
+            assert_eq!(focused_history_entry(&model, &view).unwrap().id, 6);
+            assert!(!model.entries.back().unwrap().collapsed);
+        }
+        // Keep the marker and action label when the selected header is offscreen.
+        view.following = false;
+        view.scroll = 5;
+        view.cursor = 0;
+        terminal
+            .draw(|frame| draw(frame, &model, &mut view, &config))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("▶"));
+        assert!(text.contains("Enter collapse • dir/file6.rs"));
+    }
+
+    #[test]
+    fn horizontal_history_keys_preserve_tree_state_and_reveal_wide_hunks() {
+        let config = Config::parse_from(["recon", "--no-animations"]);
+        let mut model = history_model();
+        model.apply(crate::model::Update::Done);
+        let diff = format!("+{}TAIL", "界e\u{301}".repeat(80));
+        model.entries.back_mut().unwrap().diff = diff.clone().into();
+        model.entries.back_mut().unwrap().line_count = 1;
+        let mut view = View::new();
+        view.panel_focus = true;
+        view.selected = Some("dir/".into());
+        let mut terminal = Terminal::new(TestBackend::new(140, 24)).unwrap();
+        let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+        let snapshot = |terminal: &Terminal<TestBackend>| -> String {
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect()
+        };
+        terminal
+            .draw(|frame| draw(frame, &model, &mut view, &config))
+            .unwrap();
+        assert!(!snapshot(&terminal).contains("TAIL"));
+        for folded in [false, true] {
+            view.collapsed.clear();
+            if folded {
+                view.collapsed.insert("dir/".into());
+            }
+            let folders = view.collapsed.clone();
+            for key in [
+                KeyCode::Right,
+                KeyCode::Char('l'),
+                KeyCode::Left,
+                KeyCode::Char('h'),
+            ] {
+                handle_key(key.into(), &mut model, &mut view, &tx, 24);
+                assert_eq!(view.collapsed, folders);
+                assert_eq!(view.selected.as_deref(), Some("dir/"));
+                assert!(view.filter.is_none());
+            }
+        }
+        for _ in 0..500 {
+            handle_key(KeyCode::Right.into(), &mut model, &mut view, &tx, 24);
+        }
+        assert_eq!(view.horizontal_scroll, view.horizontal_max);
+        terminal
+            .draw(|frame| draw(frame, &model, &mut view, &config))
+            .unwrap();
+        let text = snapshot(&terminal);
+        assert!(
+            text.contains("TAIL"),
+            "scroll {} max {}: {}",
+            view.horizontal_scroll,
+            view.horizontal_max,
+            text
+        );
+        assert!(text.contains("╭─ ▾ dir/file7.rs"));
+        assert!(text.contains("▶"));
+        assert_eq!(model.entries.back().unwrap().diff.as_ref(), diff);
+        for _ in 0..500 {
+            handle_key(KeyCode::Left.into(), &mut model, &mut view, &tx, 24);
+        }
+        assert_eq!(view.horizontal_scroll, 0);
+        // Files retain their original folding keys when they regain focus.
+        view.panel_focus = false;
+        handle_key(KeyCode::Right.into(), &mut model, &mut view, &tx, 24);
+        assert!(!view.collapsed.contains("dir/"));
+        handle_key(KeyCode::Left.into(), &mut model, &mut view, &tx, 24);
+        assert!(view.collapsed.contains("dir/"));
+    }
+
+    #[test]
+    fn quick_refresh_keeps_watching_header_and_keybind_footer() {
+        let config = Config::parse_from(["recon", "--no-animations"]);
+        let mut model = Model::new(10, 1024);
+        model.apply(crate::model::Update::Done);
+        model.apply(crate::model::Update::Progress("Refreshing…".into()));
+        let mut view = View::new();
+        let mut terminal = Terminal::new(TestBackend::new(140, 24)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &model, &mut view, &config))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("WATCHING"));
+        assert!(!text.contains("REFRESHING"));
+        assert!(!text.contains("Refreshing…"));
+        assert!(text.contains("c clear"));
     }
     #[test]
     fn sidebar_preserves_filter_scroll_and_focus_rules() {

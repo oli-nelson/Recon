@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use git2::{ObjectType, Repository, StatusOptions};
+use git2::{AttrCheckFlags, AttrValue, ObjectType, Repository, StatusOptions};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -309,8 +309,10 @@ impl Repo {
         }
         let odb = self.git.odb()?;
         let (size, _) = odb.read_header(entry.id())?;
+        let mode = self.comparison_mode(entry.filemode() as u32)?;
+        let normalize = entry.filemode() != 0o120000 && self.normalize_line_endings(path)?;
         if size as u64 > self.max_text {
-            // Stream large HEAD blobs instead of allocating their entire contents.
+            // Stream raw blobs: never execute repository clean/smudge filters.
             let mut child = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&self.root)
@@ -319,38 +321,115 @@ impl Repo {
                 .stderr(std::process::Stdio::null())
                 .spawn()?;
             let mut stream = child.stdout.take().context("Git blob stream unavailable")?;
-            let mut hasher = blake3::Hasher::new();
-            let mut buf = [0u8; 65536];
-            loop {
-                if self.cancel.load(Ordering::Relaxed) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    bail!("Cancelled");
-                }
-                let n = stream.read(&mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
+            let result = self.read_content(&mut stream, mode, normalize);
+            if result.is_err() {
+                let _ = child.kill();
             }
-            if !child.wait()?.success() {
+            let status = child.wait()?;
+            let content = result?;
+            if !status.success() {
                 bail!("Failed to read HEAD blob for {path}");
             }
-            return Ok(Content {
-                kind: Kind::Large,
-                size: size as u64,
-                hash: *hasher.finalize().as_bytes(),
-                text: None,
-                mode: entry.filemode() as u32,
-                modified_at: None,
-            });
+            return Ok(content);
         }
         let blob = self.git.find_blob(entry.id())?;
-        Ok(Content::from_bytes(
-            blob.content(),
-            entry.filemode() as u32,
-            self.max_text,
-        ))
+        self.read_content(&mut blob.content(), mode, normalize)
+    }
+    fn comparison_mode(&self, mode: u32) -> Result<u32> {
+        let config = self.git.config()?;
+        if mode == 0o120000 && !config.get_bool("core.symlinks").unwrap_or(true) {
+            return Ok(0o100644);
+        }
+        if matches!(mode, 0o100644 | 0o100755)
+            && (!cfg!(unix) || !config.get_bool("core.filemode").unwrap_or(true))
+        {
+            return Ok(0o100644);
+        }
+        Ok(mode)
+    }
+    fn normalize_line_endings(&self, path: &str) -> Result<bool> {
+        let config = self.git.config()?;
+        if !config.get_bool("core.symlinks").unwrap_or(true)
+            && self
+                .git
+                .index()?
+                .get_path(Path::new(path), 0)
+                .is_some_and(|entry| entry.mode == 0o120000)
+        {
+            return Ok(false);
+        }
+        let text = AttrValue::from_string(self.git.get_attr(
+            Path::new(path),
+            "text",
+            AttrCheckFlags::default(),
+        )?);
+        if text == AttrValue::False {
+            return Ok(false);
+        }
+        let eol = self
+            .git
+            .get_attr(Path::new(path), "eol", AttrCheckFlags::default())?;
+        Ok(matches!(text, AttrValue::True | AttrValue::String("auto"))
+            || matches!(eol, Some("lf" | "crlf"))
+            || config.get_bool("core.autocrlf").unwrap_or(false)
+            || config
+                .get_string("core.autocrlf")
+                .is_ok_and(|v| v == "input"))
+    }
+    /// Normalize configured UTF-8 text only; binary data and symlink targets stay raw.
+    /// Fingerprints stream even when the retained text exceeds the configured limit.
+    fn read_content(&self, reader: &mut impl Read, mode: u32, normalize: bool) -> Result<Content> {
+        let mut raw = Fingerprint::default();
+        let mut normalized = Fingerprint::default();
+        let mut utf8_tail = Vec::new();
+        let mut textual = normalize;
+        let mut pending_cr = false;
+        let mut buf = [0u8; 65536];
+        loop {
+            if self.cancel.load(Ordering::Relaxed) {
+                bail!("Cancelled");
+            }
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            let bytes = &buf[..n];
+            raw.update(bytes, self.max_text);
+            if textual {
+                utf8_tail.extend_from_slice(bytes);
+                match std::str::from_utf8(&utf8_tail) {
+                    Ok(_) => utf8_tail.clear(),
+                    Err(error) if error.error_len().is_none() => {
+                        let tail = utf8_tail[error.valid_up_to()..].to_vec();
+                        utf8_tail = tail;
+                    }
+                    Err(_) => textual = false,
+                }
+                if bytes.contains(&0) {
+                    textual = false;
+                }
+                let mut converted = Vec::with_capacity(n + 1);
+                for &byte in bytes {
+                    if pending_cr && byte != b'\n' {
+                        converted.push(b'\r');
+                    }
+                    if byte != b'\r' {
+                        converted.push(byte);
+                    }
+                    pending_cr = byte == b'\r';
+                }
+                normalized.update(&converted, self.max_text);
+            }
+        }
+        if pending_cr {
+            normalized.update(b"\r", self.max_text);
+        }
+        let fingerprint = if textual && utf8_tail.is_empty() {
+            normalized
+        } else {
+            raw
+        };
+        Ok(fingerprint.content(mode, self.max_text))
     }
     pub fn working_content(&self, path: &str) -> Result<Content> {
         // Never traverse a symlink in a parent component.
@@ -420,62 +499,45 @@ impl Repo {
             Ok(f) => f,
             Err(e) => return Ok(unreadable(e.to_string())),
         };
-        if meta.len() > self.max_text {
-            let mut hasher = blake3::Hasher::new();
-            let mut buf = [0u8; 65536];
-            let mut size = 0;
-            loop {
-                if self.cancel.load(Ordering::Relaxed) {
-                    bail!("Cancelled");
-                }
-                let n = file.read(&mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
-                size += n as u64;
-            }
-            return Ok(Content {
-                kind: Kind::Large,
-                size,
-                hash: *hasher.finalize().as_bytes(),
-                text: None,
-                mode,
-                modified_at,
-            });
-        }
-        let mut bytes = Vec::with_capacity(meta.len() as usize);
-        file.by_ref()
-            .take(self.max_text.saturating_add(1))
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > self.max_text {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(&bytes);
-            let mut size = bytes.len() as u64;
-            let mut buf = [0u8; 65536];
-            loop {
-                if self.cancel.load(Ordering::Relaxed) {
-                    bail!("Cancelled");
-                }
-                let n = file.read(&mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
-                size += n as u64;
-            }
-            return Ok(Content {
-                kind: Kind::Large,
-                size,
-                hash: *hasher.finalize().as_bytes(),
-                text: None,
-                mode,
-                modified_at,
-            });
-        }
-        Ok(Content::from_bytes(&bytes, mode, self.max_text).with_modified_at(modified_at))
+        let mode = self.comparison_mode(mode)?;
+        let normalize = self.normalize_line_endings(path)?;
+        Ok(self
+            .read_content(&mut file, mode, normalize)?
+            .with_modified_at(modified_at))
     }
 }
+#[derive(Default)]
+struct Fingerprint {
+    hash: blake3::Hasher,
+    size: u64,
+    text: Vec<u8>,
+}
+impl Fingerprint {
+    fn update(&mut self, bytes: &[u8], limit: u64) {
+        self.hash.update(bytes);
+        self.size += bytes.len() as u64;
+        if self.size <= limit {
+            self.text.extend_from_slice(bytes);
+        } else {
+            self.text.clear();
+        }
+    }
+    fn content(self, mode: u32, limit: u64) -> Content {
+        if self.size <= limit {
+            Content::from_bytes(&self.text, mode, limit)
+        } else {
+            Content {
+                kind: Kind::Large,
+                size: self.size,
+                hash: *self.hash.finalize().as_bytes(),
+                text: None,
+                mode,
+                modified_at: None,
+            }
+        }
+    }
+}
+
 fn unreadable(message: String) -> Content {
     Content {
         kind: Kind::Unreadable,

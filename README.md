@@ -34,8 +34,8 @@ unstaged, and nonignored untracked files, comparing final working contents.
 | `/` | Live, case-insensitive file-path search; Enter keeps it, Esc cancels |
 | `n` / `N` | Next / previous matching file while a search is active |
 | `[` / `]` | Widen / narrow history; also drag the divider with the mouse |
-| `j` / `k`, arrows | Navigate tree or scroll the focused history |
-| `h` / `l`, arrows | Collapse / expand directories |
+| `j` / `k`, arrows | Navigate tree or move the focused history selection |
+| `h` / `l`, Left/Right | Files: collapse/expand directories; history: scroll horizontally |
 | `Tab` | Switch focus; switch panes in narrow terminals |
 | `d` | Hide / show history without losing its filter or reading position |
 | `Enter` | Open/focus selected file history; toggle directories or focused history entries |
@@ -44,6 +44,13 @@ unstaged, and nonignored untracked files, comparing final working contents.
 | `f` | Toggle live following; resume at the newest entry at the top |
 | `Esc` | Show aggregate history |
 | `?` / `q` | Help / quit |
+
+When history has focus, an accent marker identifies the selected entry and the
+pane's bottom border names the file and expand/collapse action for Enter. The
+marker remains visible when the entry's header is scrolled offscreen. Movement
+keys move the selection through visible lines, scrolling at the pane edges.
+Brief background checks keep the watching indicator and shortcut footer stable;
+refresh progress appears only after 250 ms. Startup progress remains immediate.
 
 The header labels the active comparison as **HEAD** or **last clear
 (contents at last clear)**. A coloured newest-to-oldest age-dot legend appears
@@ -74,7 +81,8 @@ not a reliable record of every edit.
 A staged change canceled by the working contents has a status-only explanation. Reliably detected staged renames
 show their origin; otherwise paths appear as deletion and creation. History uses
 UTC timestamps. Oversized entries initially collapse. Wide lines are clipped to
-the panel width; their retained text is unchanged.
+the panel width; focus history and use Left/Right or h/l to scroll through them.
+Entry headers and selection markers stay fixed, and retained text is unchanged.
 
 Repeated saves record observed transitions. New entries appear above older entries;
 live-follow stays at the top. Scroll down to read older history. While paused,
@@ -126,8 +134,14 @@ symlinks are not traversed. Submodules are opaque paths; nested events are
 ignored and dirty status reconciles periodically. Native watchers may still
 subscribe to nested directories at the operating-system level. Non-UTF-8 path
 names produce an explicit error; non-UTF-8 contents get binary summaries. Git
-clean/smudge filters and CRLF normalization are not applied to content comparisons:
-Recon compares actual bytes on disk with HEAD blob bytes. A multi-file baseline
+clean/smudge filters and working-tree encoding conversions are not executed.
+For UTF-8 text with Git line-ending conversion enabled (`core.autocrlf`, `text`,
+or `eol` attributes), Recon compares and displays LF-normalized text, so CRLF
+checkouts do not invent edit hunks. `-text`, binary data, and symlink targets retain
+their exact bytes. Without configured conversion, line endings remain significant.
+Executable bits are ignored when `core.filemode=false` or on Windows; repositories
+with `core.symlinks=false` compare tracked symlink targets against plain checkout
+files. A multi-file baseline
 capture observes each file once; it is not an atomic filesystem snapshot.
 
 There is no portable display-refresh/vsync callback in Recon's text terminal

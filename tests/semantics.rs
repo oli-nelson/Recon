@@ -51,6 +51,156 @@ fn reset(e: &mut Engine, m: &mut Model, clear: bool) {
 fn refresh(e: &mut Engine, m: &mut Model) {
     e.refresh(None, false, &mut |u| m.apply(u)).unwrap();
 }
+
+#[test]
+fn configured_crlf_checkout_does_not_invent_changes_on_watcher_events() {
+    let d = fixture();
+    git(d.path(), &["config", "core.autocrlf", "true"]);
+    fs::write(d.path().join("a.txt"), "one\r\n").unwrap();
+    // Refresh the index stat data as a real CRLF checkout would.
+    git(d.path(), &["add", "a.txt"]);
+    let (mut engine, mut model) = setup(&d);
+    reset(&mut engine, &mut model, false);
+    engine
+        .refresh(Some(BTreeSet::from(["a.txt".into()])), false, &mut |u| {
+            model.apply(u)
+        })
+        .unwrap();
+    assert!(model.files.is_empty(), "{:?}", model.files);
+    assert!(model.entries.is_empty());
+
+    fs::write(d.path().join("a.txt"), "two\r\n").unwrap();
+    refresh(&mut engine, &mut model);
+    assert_eq!(model.files["a.txt"].status, Status::Modified);
+    assert!(model.entries.back().unwrap().diff.contains("-one\n+two\n"));
+    fs::write(d.path().join("a.txt"), "one\r\n").unwrap();
+    refresh(&mut engine, &mut model);
+    assert!(model.files.is_empty());
+}
+
+#[test]
+fn untrusted_executable_bits_do_not_invent_changes() {
+    let d = fixture();
+    git(d.path(), &["update-index", "--chmod=+x", "a.txt"]);
+    git(d.path(), &["commit", "-qm", "executable script"]);
+    git(d.path(), &["config", "core.filemode", "false"]);
+    let (mut engine, mut model) = setup(&d);
+    let base = engine
+        .repo
+        .head_content("a.txt", engine.repo.head().unwrap())
+        .unwrap();
+    assert!(base.same(&engine.repo.working_content("a.txt").unwrap()));
+    reset(&mut engine, &mut model, false);
+    engine
+        .refresh(Some(BTreeSet::from(["a.txt".into()])), false, &mut |u| {
+            model.apply(u)
+        })
+        .unwrap();
+    assert!(model.files.is_empty());
+    assert!(model.entries.is_empty());
+    fs::write(d.path().join("a.txt"), "edited\n").unwrap();
+    refresh(&mut engine, &mut model);
+    assert_eq!(model.files["a.txt"].status, Status::Modified);
+}
+
+#[test]
+fn disabled_symlinks_compare_plain_checkout_stubs() {
+    let d = fixture();
+    let repo = git2::Repository::open(d.path()).unwrap();
+    let target = repo.blob(b"a.txt").unwrap().to_string();
+    git(
+        d.path(),
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "120000",
+            &target,
+            "link",
+        ],
+    );
+    git(d.path(), &["commit", "-qm", "symlink"]);
+    git(d.path(), &["config", "core.symlinks", "false"]);
+    git(d.path(), &["config", "core.autocrlf", "true"]);
+    fs::write(d.path().join("link"), "a.txt").unwrap();
+    let (mut engine, mut model) = setup(&d);
+    let base = engine
+        .repo
+        .head_content("link", engine.repo.head().unwrap())
+        .unwrap();
+    assert!(base.same(&engine.repo.working_content("link").unwrap()));
+    reset(&mut engine, &mut model, false);
+    assert!(model.files.is_empty());
+    fs::write(d.path().join("link"), "different-target").unwrap();
+    refresh(&mut engine, &mut model);
+    assert!(
+        model
+            .entries
+            .back()
+            .unwrap()
+            .diff
+            .contains("+different-target")
+    );
+}
+
+#[test]
+fn attributes_control_eol_comparison_and_binary_bytes_stay_exact() {
+    for (attributes, autocrlf, equal) in [
+        ("*.txt text eol=crlf\n", "false", true),
+        ("*.txt text eol=lf\n", "false", true),
+        ("*.txt -text\n", "true", false),
+        ("", "false", false),
+        ("", "input", true),
+    ] {
+        let d = fixture();
+        git(d.path(), &["config", "core.autocrlf", autocrlf]);
+        fs::write(d.path().join(".gitattributes"), attributes).unwrap();
+        let (engine, _) = setup(&d);
+        let base = engine
+            .repo
+            .head_content("a.txt", engine.repo.head().unwrap())
+            .unwrap();
+        fs::write(d.path().join("a.txt"), "one\r\n").unwrap();
+        assert_eq!(
+            base.same(&engine.repo.working_content("a.txt").unwrap()),
+            equal
+        );
+        for bytes in [b"\0one\r\n".as_slice(), b"\xffone\r\n"] {
+            fs::write(d.path().join("a.txt"), bytes).unwrap();
+            assert_eq!(
+                engine.repo.working_content("a.txt").unwrap().hash,
+                *blake3::hash(bytes).as_bytes()
+            );
+        }
+    }
+}
+
+#[test]
+fn large_text_normalization_handles_chunk_boundaries_without_retaining_text() {
+    let d = fixture();
+    let text = format!("{}\r\n{}🙂\r\n", "a".repeat(65535), "b".repeat(65533));
+    fs::write(d.path().join("a.txt"), text.replace("\r\n", "\n")).unwrap();
+    git(d.path(), &["add", "a.txt"]);
+    git(d.path(), &["commit", "-qm", "large text"]);
+    git(d.path(), &["config", "core.autocrlf", "true"]);
+    fs::write(d.path().join("a.txt"), &text).unwrap();
+    let config = Config::parse_from(["recon", d.path().to_str().unwrap(), "--max-text-bytes", "8"]);
+    let engine = Engine::new(&config).unwrap();
+    let base = engine
+        .repo
+        .head_content("a.txt", engine.repo.head().unwrap())
+        .unwrap();
+    let current = engine.repo.working_content("a.txt").unwrap();
+    assert!(base.same(&current));
+    assert!(current.text.is_none());
+    let mut binary = text.into_bytes();
+    binary.extend_from_slice(b"\0\r\n");
+    fs::write(d.path().join("a.txt"), &binary).unwrap();
+    assert_eq!(
+        engine.repo.working_content("a.txt").unwrap().hash,
+        *blake3::hash(&binary).as_bytes()
+    );
+}
 #[test]
 fn edits_undo_delete_recreate_clear_and_git_reset() {
     let d = fixture();

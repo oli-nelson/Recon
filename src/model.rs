@@ -6,6 +6,7 @@ use std::{
 };
 
 const NOTICE_LIFETIME: Duration = Duration::from_secs(3);
+const REFRESH_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -82,6 +83,7 @@ pub struct Model {
     pub branch: String,
     pub message: String,
     pub refreshing: bool,
+    refresh_started: Option<Instant>,
     pub notice: String,
     notice_until: Option<Instant>,
     pub watch_status: Option<String>,
@@ -101,6 +103,7 @@ impl Model {
             branch: "…".into(),
             message: "Reading repository…".into(),
             refreshing: true,
+            refresh_started: Some(Instant::now() - REFRESH_DELAY),
             notice: String::new(),
             notice_until: None,
             watch_status: None,
@@ -111,6 +114,20 @@ impl Model {
     fn set_notice(&mut self, message: String) {
         self.notice_until = (!message.is_empty()).then(|| Instant::now() + NOTICE_LIFETIME);
         self.notice = message;
+    }
+
+    pub fn begin_refresh(&mut self) {
+        if !self.refreshing {
+            self.refresh_started = Some(Instant::now());
+        }
+        self.refreshing = true;
+    }
+
+    pub fn refresh_visible(&self, now: Instant) -> bool {
+        self.refreshing
+            && self
+                .refresh_started
+                .is_none_or(|started| now.saturating_duration_since(started) >= REFRESH_DELAY)
     }
 
     pub fn dismiss_notice(&mut self) -> bool {
@@ -155,7 +172,7 @@ impl Model {
                 self.baseline = baseline;
                 self.set_notice(reason.clone());
                 self.message = reason;
-                self.refreshing = true;
+                self.begin_refresh();
             }
             Update::Files(rows) => {
                 for (mut row, entry) in rows {
@@ -223,7 +240,7 @@ impl Model {
                 });
             }
             Update::Progress(message) => {
-                self.refreshing = true;
+                self.begin_refresh();
                 self.message = message;
             }
             Update::Notice(message) => {
@@ -234,7 +251,10 @@ impl Model {
                 self.set_notice(message.clone());
                 self.watch_status = Some(message);
             }
-            Update::Done => self.refreshing = false,
+            Update::Done => {
+                self.refreshing = false;
+                self.refresh_started = None;
+            }
         }
     }
 }
@@ -253,6 +273,22 @@ fn remove_time(times: &mut BTreeMap<SystemTime, usize>, time: Option<SystemTime>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn short_background_refreshes_stay_quiet_and_long_ones_show_progress() {
+        let mut model = Model::new(10, 1024);
+        assert!(model.refresh_visible(Instant::now())); // Startup remains explicit.
+        model.apply(Update::Done);
+        model.apply(Update::Progress("Refreshing".into()));
+        let started = model.refresh_started.unwrap();
+        assert!(!model.refresh_visible(started + Duration::from_millis(100)));
+        model.apply(Update::Progress("Comparing files".into()));
+        assert_eq!(model.refresh_started, Some(started));
+        assert!(model.refresh_visible(started + Duration::from_millis(250)));
+        model.apply(Update::Done);
+        assert!(!model.refresh_visible(started + Duration::from_secs(1)));
+        model.apply(Update::Progress("Another quick check".into()));
+        assert!(!model.refresh_visible(Instant::now()));
+    }
     #[test]
     fn notifications_expire_and_refreshes_do_not_extend_their_lifetime() {
         let mut model = Model::new(10, 1024);

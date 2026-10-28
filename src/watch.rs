@@ -65,7 +65,7 @@ fn run(mut engine: Engine, config: Config, commands: Receiver<Command>, tx: Sync
                 flag.store(true, Ordering::Relaxed);
             }
         },
-        notify::Config::default(),
+        notify::Config::default().with_follow_symlinks(false),
     );
     let mut watch_notice = None;
     let mut watcher = match watcher {
@@ -78,17 +78,34 @@ fn run(mut engine: Engine, config: Config, commands: Receiver<Command>, tx: Sync
         }
     };
     if let Some(w) = &mut watcher {
-        let result = w
-            .watch(&engine.repo.root, RecursiveMode::Recursive)
-            .and_then(|_| w.watch(&engine.repo.git_dir, RecursiveMode::Recursive));
-        if let Err(e) = result {
-            watch_notice = Some(format!(
-                "Watcher partially unavailable ({e}); periodic reconciliation active"
-            ));
+        let repo = &engine.repo;
+        let root_watched = match w.watch(&repo.root, RecursiveMode::Recursive) {
+            Ok(()) => true,
+            Err(error) => {
+                watch_notice = Some(format!(
+                    "Watcher partially unavailable ({error}); periodic reconciliation active"
+                ));
+                false
+            }
+        };
+        // An ordinary .git directory is already covered by the root watch. Linked
+        // worktrees need separate watches, but never subscribe to the same tree twice.
+        let mut watched = Vec::new();
+        if root_watched {
+            watched.push(&repo.root);
         }
-        let common = &engine.repo.common_dir;
-        if common != &engine.repo.git_dir {
-            let _ = w.watch(common, RecursiveMode::Recursive);
+        for metadata in [&repo.common_dir, &repo.git_dir] {
+            if watched.iter().any(|path| metadata.starts_with(path)) {
+                continue;
+            }
+            match w.watch(metadata, RecursiveMode::Recursive) {
+                Ok(()) => watched.push(metadata),
+                Err(error) => {
+                    watch_notice = Some(format!(
+                        "Git metadata watcher unavailable ({error}); periodic reconciliation active"
+                    ));
+                }
+            }
         }
     }
     let mut disconnected = false;
@@ -177,7 +194,12 @@ fn run(mut engine: Engine, config: Config, commands: Receiver<Command>, tx: Sync
                 gap = true;
                 first.get_or_insert(Instant::now());
             }
-            Err(_) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Watcher initialization can fail (e.g. Linux inotify limits).
+                // A disconnected channel returns immediately instead of waiting.
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
         if last_reconcile.elapsed() >= Duration::from_secs(config.reconcile_seconds) {
             full = true;
@@ -244,7 +266,11 @@ fn classify(raw: &Path, engine: &Engine) -> Option<Option<String>> {
         return None;
     }
     let relative = path.strip_prefix(&repo.root).ok()?;
-    let p = relative.to_str()?.replace('\\', "/");
+    let p = relative.to_str()?;
+    #[cfg(windows)]
+    let p = p.replace('\\', "/");
+    #[cfg(not(windows))]
+    let p = p.to_owned();
     if p.is_empty() || p.ends_with(".gitignore") {
         return Some(None);
     }
@@ -256,4 +282,41 @@ fn classify(raw: &Path, engine: &Engine) -> Option<Option<String>> {
         return Some(None);
     }
     Some(Some(p))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[cfg(unix)]
+    #[test]
+    fn backslash_is_a_filename_character_on_unix() {
+        let directory = tempfile::tempdir().unwrap();
+        git2::Repository::init(directory.path()).unwrap();
+        let config = Config::parse_from(["recon", directory.path().to_str().unwrap()]);
+        let engine = Engine::new(&config).unwrap();
+        let path = directory.path().join("literal\\name.txt");
+        std::fs::write(&path, "content").unwrap();
+        assert_eq!(
+            classify(&path, &engine),
+            Some(Some("literal\\name.txt".into()))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_events_use_git_path_separators() {
+        let directory = tempfile::tempdir().unwrap();
+        git2::Repository::init(directory.path()).unwrap();
+        let config = Config::parse_from(["recon", directory.path().to_str().unwrap()]);
+        let engine = Engine::new(&config).unwrap();
+        let path = directory.path().join("nested").join("file.txt");
+        std::fs::create_dir(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "content").unwrap();
+        assert_eq!(
+            classify(&path, &engine),
+            Some(Some("nested/file.txt".into()))
+        );
+    }
 }
