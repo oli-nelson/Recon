@@ -10,12 +10,19 @@ cargo build --release --locked
 ./target/release/recon                      # discover from current directory
 ./target/release/recon /path/to/worktree
 ./target/release/recon --once                # snapshot for noninteractive use
+./target/release/recon --version             # Cargo/release version
 ./target/release/recon --ignore 'generated/**' --ignore '*.tmp'
 ./target/release/recon --reduced-motion --theme light
 ./target/release/recon --fps 120             # frame submission cap (default 60)
 ```
 
-Requires Rust 1.88 or later and Git. Linked worktrees and repositories without a
+Release builds for macOS (Intel and Apple Silicon), Windows x64, and Linux x64
+are published through GitHub Actions. Download and extract the matching archive
+from [Releases](https://github.com/oli-nelson/Recon/releases), put `recon` (Windows:
+`recon.exe`) on your PATH, and check `recon --version`. See
+[release operations and platform requirements](docs/RELEASES.md).
+
+Building from source requires Rust 1.88 or later and Git. Linked worktrees and repositories without a
 first commit are supported. No commands write, stage, reset, or commit repository
 contents. Recon takes its opening snapshot against HEAD, including staged,
 unstaged, and nonignored untracked files, comparing final working contents.

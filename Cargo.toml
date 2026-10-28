@@ -11,7 +11,8 @@ anyhow = "1"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
-git2 = "0.20"
+# Recon only reads local repositories; keep release binaries free of SSH/OpenSSL.
+git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 globset = "0.4"
 notify = "8"
 ratatui = "0.29"

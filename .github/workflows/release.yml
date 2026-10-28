@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version, e.g. 0.1.0 or 0.2.0-rc.1'
+        required: true
+        type: string
+      expected_sha:
+        description: 'Optional source SHA guard (supplied by the local helper)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recon-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      source_sha: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Test release automation without network publication
+        run: bash scripts/test-release.sh
+      - id: version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          SOURCE_SHA: ${{ github.sha }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_REF_TYPE" == branch ]] || { echo 'error: select a branch, not a tag'; exit 1; }
+          source scripts/release-version.sh
+          version=$(release_version "$RELEASE_VERSION")
+          [[ -z "$EXPECTED_SHA" || "$EXPECTED_SHA" == "$SOURCE_SHA" ]] || { echo 'error: source changed before dispatch'; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          [[ -z "$(git ls-remote --tags origin "refs/tags/v$version")" ]] || { echo 'error: tag exists; retry failed jobs in the same run or choose a new version'; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          mkdir -p artifacts/release-input
+          bash scripts/release-changelog.sh "$version" CHANGELOG.md > artifacts/release-input/CHANGELOG.md
+          awk -v version="$version" '
+            /^## / {
+              if (index($0, "## [" version "] - ") == 1) { found++; section = 1; next }
+              section = 0
+            }
+            section { print }
+            END { if (found != 1) exit 1 }
+          ' artifacts/release-input/CHANGELOG.md > artifacts/release-input/release-notes.md
+          printf '\nBinaries are unsigned; macOS builds are not notarized. See docs/RELEASES.md for platform requirements.\n' >> artifacts/release-input/release-notes.md
+      - uses: actions/upload-artifact@v6
+        with:
+          name: recon-release-input
+          path: artifacts/release-input/*
+          if-no-files-found: error
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos-x64
+          - os: macos-15
+            target: aarch64-apple-darwin
+            platform: macos-arm64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x64
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            platform: windows-x64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.88.0'
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+      - name: Apply the release version before tests and compilation
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: python3 scripts/set-release-version.py "$RELEASE_VERSION"
+      - run: git config --global core.autocrlf false
+      - run: cargo fmt --check
+      - run: cargo test --locked --target "${{ matrix.target }}"
+      - run: cargo clippy --locked --all-targets --target "${{ matrix.target }}" -- -D warnings
+      - run: cargo build --release --locked --target "${{ matrix.target }}"
+      - name: Verify the shipped binary version and package it
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          binary="target/$RELEASE_TARGET/release/recon"
+          if [[ "$RUNNER_OS" == Windows ]]; then binary="$binary.exe"; fi
+          [[ "$("$binary" --version)" == "recon $RELEASE_VERSION" ]]
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            if otool -L "$binary" | grep -E '/(opt/homebrew|usr/local)/'; then
+              echo 'error: release binary depends on Homebrew libraries'
+              exit 1
+            fi
+          fi
+          bash scripts/package-release.sh "$RELEASE_VERSION" "$RELEASE_PLATFORM"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: recon-${{ matrix.platform }}
+          path: artifacts/release/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: recon-*
+          path: artifacts/release
+          merge-multiple: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Finalize changelog, versions, tag, and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+          RELEASE_BRANCH: ${{ github.ref_name }}
+        run: bash scripts/finalize-release.sh "$RELEASE_VERSION" "$RELEASE_BRANCH" "$SOURCE_SHA" artifacts/release
