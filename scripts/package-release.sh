@@ -18,5 +18,5 @@ esac
 [[ -s "target/$target/release/$binary" ]] || { echo 'error: missing release executable' >&2; exit 1; }
 mkdir -p artifacts/release
 tar -czf "artifacts/release/recon-$version-$platform.tar.gz" \
-  -C "target/$target/release" "$binary" -C "$PWD" README.md config.default.toml
+  -C "target/$target/release" "$binary" -C "$PWD" README.md config.default.toml CHANGELOG.md docs
 tar -tzf "artifacts/release/recon-$version-$platform.tar.gz"

@@ -1,0 +1,30 @@
+ ◈ RECON │ Comparing: last clear │ ● WATCHING │ feature/trail-search              Age: newest ●●●●●●●●●●●●● oldest (relative mtime)
+╭ Files ─────────────────────────────────────╮╭ History • All files • LIVE  ───────────────────────────────────────────────────────╮
+│        ▾ docs/                             ││  ╭─ ▾ docs/usage.md  00:38:23Z  • edited                                           │
+│    M ● │   ~ usage.md                      ││  │ --- a/docs/usage.md                                                             │
+│        ▾ src/                              ││  │ +++ b/docs/usage.md                                                             │
+│   MM ● │   ~ settings.py                   ││  │ @@ -2,3 +2,4 @@                                                                 │
+│                                            ││  │                                                                                 │
+│                                            ││  │  Find a trail for your next weekend.                                            │
+│                                            ││  │  Search by name, then sort by distance.                                         │
+│                                            ││  │ +Search is case-insensitive and ignores extra spaces.                           │
+│                                            ││  ╰────────────────                                                                 │
+│                                            ││  ╭─ ▾ src/settings.py  00:38:22Z  • edited                                         │
+│                                            ││  │ --- a/src/settings.py                                                           │
+│                                            ││  │ +++ b/src/settings.py                                                           │
+│                                            ││  │ @@ -1,2 +1,2 @@                                                                 │
+│                                            ││  │ -PAGE_SIZE = 25                                                                 │
+│                                            ││  │ +PAGE_SIZE = 50                                                                 │
+│                                            ││  │  SHOW_DISTANCE = True                                                           │
+│                                            ││  ╰────────────────                                                                 │
+│                                            ││                                                                                    │
+│                                            ││                                                                                    │
+│                                            ││                                                                                    │
+│                                            ││                                                                                    │
+│                                            ││                                                                                    │
+│                                            ││                                                                                    │
+│                                            ││                                                                                    │
+│                                            ││                                                                                    │
+│                                            ││                                                                                    │
+╰ +0 ~2 −0 ·0 │ Root: …ots-8kqly46z/waypoint ╯╰────────────────────────────────────────────────────────────────────────────────────╯
+? help  e edit  / search  c clear  g HEAD  d panel  Tab focus  q quit

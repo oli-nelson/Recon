@@ -44,7 +44,8 @@ version from Cargo at compile time; no separate runtime version is maintained.
 
 Downloads are `recon-<version>-<platform>.tar.gz` for `macos-x64`, `macos-arm64`,
 `windows-x64`, and `linux-x64`, plus `SHA256SUMS`. Each archive contains `recon`
-(Windows: `recon.exe`), `README.md`, and the documented default configuration.
+(Windows: `recon.exe`), `README.md`, the documented default configuration, changelog, and `docs/`
+(including the user guide and screenshots).
 Extract the matching archive, place the executable on your PATH, and run
 `recon --version`. Windows users can extract `.tar.gz` with `tar` or an archive tool.
 

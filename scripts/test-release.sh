@@ -49,7 +49,8 @@ expect_failure() {
 }
 cp "$script_dir/"* "$temp/repo/scripts/"
 cp "$script_dir/../"{Cargo.toml,Cargo.lock} "$temp/repo/"
-cp "$script_dir/../"{README.md,config.default.toml} "$temp/repo/"
+cp "$script_dir/../"{README.md,config.default.toml,CHANGELOG.md} "$temp/repo/"
+cp -R "$script_dir/../docs" "$temp/repo/docs"
 cd "$temp/repo"
 python3 scripts/set-release-version.py v1.2.3-rc.1
 python3 - <<'CHECK'
@@ -67,7 +68,10 @@ for spec in 'macos-x64 x86_64-apple-darwin recon' 'macos-arm64 aarch64-apple-dar
   mkdir -p "target/$target/release"
   echo binary > "target/$target/release/$binary"
   bash scripts/package-release.sh 1.2.3 "$platform"
-  tar -tzf "artifacts/release/recon-1.2.3-$platform.tar.gz" | grep -Fxq "$binary"
+  tar -tzf "artifacts/release/recon-1.2.3-$platform.tar.gz" > "$temp/archive-contents"
+  for entry in "$binary" README.md config.default.toml CHANGELOG.md docs/GUIDE.md docs/images/overview.png docs/images/file-history.png docs/images/fresh-baseline.png; do
+    grep -Fxq "$entry" "$temp/archive-contents"
+  done
 done
 git init -q --bare "$temp/origin.git"
 git init -q -b main
@@ -83,7 +87,7 @@ cat > CHANGELOG.md <<'CHANGELOG'
 
 - An older release.
 CHANGELOG
-git add scripts CHANGELOG.md .gitignore Cargo.toml Cargo.lock README.md config.default.toml
+git add scripts docs CHANGELOG.md .gitignore Cargo.toml Cargo.lock README.md config.default.toml
 git commit -qm initial
 git remote add origin "$temp/origin.git"
 git push -q origin main

@@ -1,0 +1,30 @@
+ ◈ RECON │ Comparing: HEAD │ ● WATCHING │ feature/trail-search                    Age: newest ●●●●●●●●●●●●● oldest (relative mtime)
+╭ Files ─────────────────────────────────────╮╭ History • All files • LIVE  ───────────────────────────────────────────────────────╮
+│        ▾ docs/                             ││  ╭─ ▾ tests/test_search.py  00:38:18Z  • opening snapshot                          │
+│    M ● │   ~ usage.md                      ││  │ --- a/tests/test_search.py                                                      │
+│    D ●   − notes.txt                       ││  │ +++ b/tests/test_search.py                                                      │
+│        ▾ src/                              ││  │ @@ -0,0 +1,2 @@                                                                 │
+│   M  ● │   ~ settings.py                   ││  │ +def test_search_ignores_case():                                                │
+│        ▾ tests/                            ││  │ +    assert search("RIDGE") == search("ridge")                                  │
+│   ?? ● │   + test_search.py                ││  ╰────────────────                                                                 │
+│                                            ││  ╭─ ▾ src/settings.py  00:38:18Z  • opening snapshot                               │
+│                                            ││  │ --- a/src/settings.py                                                           │
+│                                            ││  │ +++ b/src/settings.py                                                           │
+│                                            ││  │ @@ -1,2 +1,2 @@                                                                 │
+│                                            ││  │ -PAGE_SIZE = 10                                                                 │
+│                                            ││  │ -SHOW_DISTANCE = False                                                          │
+│                                            ││  │ +PAGE_SIZE = 25                                                                 │
+│                                            ││  │ +SHOW_DISTANCE = True                                                           │
+│                                            ││  ╰────────────────                                                                 │
+│                                            ││  ╭─ ▾ notes.txt  00:38:18Z  • opening snapshot                                     │
+│                                            ││  │ --- a/notes.txt                                                                 │
+│                                            ││  │ +++ b/notes.txt                                                                 │
+│                                            ││  │ @@ -1 +0,0 @@                                                                   │
+│                                            ││  │ -Move search ideas into the project docs.                                       │
+│                                            ││  ╰────────────────                                                                 │
+│                                            ││  ╭─ ▾ docs/usage.md  00:38:18Z  • opening snapshot                                 │
+│                                            ││  │ --- a/docs/usage.md                                                             │
+│                                            ││  │ +++ b/docs/usage.md                                                             │
+│                                            ││  │ @@ -1,3 +1,4 @@                                                                 │
+╰ +1 ~2 −1 ·0 │ Root: …ots-8kqly46z/waypoint ╯╰────────────────────────────────────────────────────────────────────────────────────╯
+? help  e edit  / search  c clear  g HEAD  d panel  Tab focus  q quit

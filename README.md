@@ -1,250 +1,180 @@
 # Recon
 
-A Rust terminal app that watches a Git working tree and keeps a bounded, in-memory
-history of the edits it observes. Newest entries appear at the top. The left pane is a stable tree of affected
-paths; the right pane is an immutable edit stack. Select a file to
-filter the stack. Git's index/worktree status appears alongside baseline status.
+**Watch your Git changes as they happen.** Recon is a terminal app that shows
+changed files alongside a live history of the edits it observes. Keep it open
+beside your editor to follow your own work, review an agent's edits, or see how a
+change evolved across several saves.
+
+![Recon showing staged, unstaged, deleted, and untracked files beside their diffs](docs/images/overview.png)
+
+Recon reads your repository without staging, resetting, or committing anything.
+It works with ordinary Git repositories, linked worktrees, and repositories that
+have not made their first commit.
+
+## Install
+
+Download the archive for your machine from
+[GitHub Releases](https://github.com/oli-nelson/Recon/releases).
+
+| Your machine | Archive suffix |
+| --- | --- |
+| macOS, Apple Silicon | `macos-arm64.tar.gz` |
+| macOS, Intel | `macos-x64.tar.gz` |
+| Linux, x64 | `linux-x64.tar.gz` |
+| Windows, x64 | `windows-x64.tar.gz` |
+
+Extract the archive and put `recon` (or `recon.exe` on Windows) in a directory
+on your `PATH`. Open a terminal and check:
 
 ```sh
-cargo build --release --locked
-./target/release/recon                      # discover from current directory
-./target/release/recon /path/to/worktree
-./target/release/recon --once                # snapshot for noninteractive use
-./target/release/recon --version             # Cargo/release version
-./target/release/recon --ignore 'generated/**' --ignore '*.tmp'
-./target/release/recon --reduced-motion --theme light
-./target/release/recon --fps 120             # frame submission cap (default 60)
+recon --version
 ```
 
-Release builds for macOS (Intel and Apple Silicon), Windows x64, and Linux x64
-are published through GitHub Actions. Download and extract the matching archive
-from [Releases](https://github.com/oli-nelson/Recon/releases), put `recon` (Windows:
-`recon.exe`) on your PATH, and check `recon --version`. See
-[release operations and platform requirements](docs/RELEASES.md).
+You need Git and a terminal. Linux builds require a glibc-based distribution
+compatible with Ubuntu 22.04 or newer. Windows may need the Microsoft Visual C++
+x64 runtime. Binaries are unsigned; macOS builds are not notarized. Releases
+include `SHA256SUMS` for verifying downloads.
 
-Building from source requires Rust 1.88 or later and Git. Linked worktrees and repositories without a
-first commit are supported. Recon's watcher never writes, stages, resets, or commits
-repository contents. Recon takes its opening snapshot against HEAD, including staged,
-unstaged, and nonignored untracked files, comparing final working contents.
+<details>
+<summary>Build from source (Rust 1.88 or later)</summary>
+
+```sh
+git clone https://github.com/oli-nelson/Recon.git
+cd Recon
+cargo install --path . --locked
+recon --version
+```
+
+Cargo installs into its binary directory (usually `~/.cargo/bin`), which must be
+on your `PATH`.
+
+</details>
+
+## Start watching
+
+Run Recon from your repository, or give it a path:
+
+```sh
+recon
+recon /path/to/your/project
+```
+
+1. **See what has changed.** Recon opens with a comparison against `HEAD`,
+   including staged, unstaged, and nonignored untracked files.
+2. **Keep working in your editor.** Each observed save adds a new entry at the
+   top of the history pane. Select a file and press `Enter` to focus its history;
+   press `Esc` to return to all files.
+3. **Focus on the next task.** Press `c` to discard the displayed history and use
+   the current file contents as a fresh baseline. This does not change your files
+   or Git index. Press `g` to discard history and compare against `HEAD` again.
+
+History lives in memory for the current session. It is bounded and records
+observed changes, not every keystroke: rapid saves can coalesce. Use Git commits
+for durable history. When `HEAD` changes, Recon starts a fresh snapshot.
+
+## Follow an edit from save to save
+
+Search with `/`, type part of a file path, and press `Enter` to keep the filter.
+Search matches full repository-relative paths, ignoring case, and filters both
+files and history. Use `n` / `N` to move between matches and `Esc` to clear it.
+
+![A search for src/search showing two successive edits, newest first](docs/images/file-history.png)
+
+The history shows transitions, so undoing an edit adds a reverse change. Scroll
+back to read earlier entries; new edits preserve your reading position while
+following is paused. Press `f` to resume following the newest changes.
+
+After `c`, only subsequent edits are compared with the captured contents. Git
+status remains visible independently:
+
+![Recon comparing new edits with the contents captured at last clear](docs/images/fresh-baseline.png)
+
+## Read the file tree
+
+| Marker | Meaning |
+| --- | --- |
+| `+` | New relative to the active baseline |
+| `~` | Modified relative to the active baseline |
+| `−` | Deleted relative to the active baseline |
+| `·` | No net content change relative to the active baseline |
+| Git `XY` column | Index status, then working-tree status; `??` means untracked |
+| Colored `●` | Relative file modification-time recency; see the header legend |
+
+The header tells you whether the baseline is `HEAD` or **last clear**. A file's
+baseline marker can differ from its Git status. Staging updates Git status
+without adding a content edit. Binary and oversized files show summaries.
+
+## Essential shortcuts
+
+Press `?` inside Recon for help, including any shortcuts you have customized.
 
 | Key | Action |
 | --- | --- |
-| `c` | Discard history and capture current contents as the new baseline |
-| `g` | Discard history and take a fresh snapshot against HEAD |
-| `/` | Live, case-insensitive file-path search; Enter keeps it, Esc cancels |
-| `n` / `N` | Next / previous matching file while a search is active |
-| `[` / `]` | Widen / narrow history; also drag the divider with the mouse |
-| `j` / `k`, arrows | Navigate tree or move the focused history selection |
-| `h` / `l`, Left/Right | Files: collapse/expand directories; history: scroll horizontally |
-| `Tab` | Switch focus; switch panes in narrow terminals |
-| `d` | Hide / show history without losing its filter or reading position |
-| `Enter` | Open/focus selected file history; toggle directories or focused history entries |
+| `j` / `k` or Up / Down | Move through files or history entries |
+| `Enter` | Focus file history; toggle a directory or history entry |
+| `Tab` | Switch between files and history |
+| `h` / `l` or Left / Right | Collapse/expand directories; scroll history horizontally |
+| `/`, `n` / `N` | Search paths; next / previous match |
+| `Esc` | Clear the accepted search and show all history |
+| `PageUp` / `PageDown`, `Ctrl-U` / `Ctrl-D` | Scroll history |
+| `f` | Toggle live following; resume at the newest entry |
+| `c` / `g` | Start fresh from current contents / `HEAD` |
+| `[` / `]` | Widen / narrow history (or drag the divider) |
+| `d` | Hide / show history |
 | `e` | Open the focused file in your editor |
-| `PageUp` / `PageDown` | Scroll history, pausing live follow |
-| `Ctrl-D` / `Ctrl-U` | Half-page down / up in the focused sidebar |
-| `f` | Toggle live following; resume at the newest entry at the top |
-| `Esc` | Show aggregate history |
 | `?` / `q` | Help / quit |
 
-When history has focus, an accent marker identifies the selected entry and the
-pane's bottom border names the file and expand/collapse action for Enter. The
-marker remains visible when the entry's header is scrolled offscreen. Movement
-keys move directly between history entries, revealing the selected entry when it
-is offscreen. Page Up/Down and Ctrl-U/D scroll through long hunks.
-Brief background checks keep the watching indicator and shortcut footer stable;
-refresh progress appears only after 250 ms. Startup progress remains immediate.
+Recon uses `VISUAL`, then `EDITOR`, falling back to `vi` on Unix/macOS or Notepad
+on Windows. For a GUI editor, include its wait option, for example
+`EDITOR='code --wait'`. Recon suspends while the editor runs and resumes when it
+exits. In narrow terminals, use `Tab` to switch panes.
 
-Press `e` on a file in the tree or on a history entry to open that file using
-`VISUAL`, then `EDITOR` if `VISUAL` is unset or blank. Without either, Recon uses
-`vi` on Unix/macOS or Notepad on Windows. Set the variable to an executable or a
-quoted command with arguments, such as `EDITOR='code --wait'`. Quote executable
-paths containing spaces when adding arguments, especially on Windows. Recon
-suspends its terminal UI while the editor runs, then resumes watching on exit;
-include your GUI editor's wait option to keep it suspended until editing finishes.
-Deleted files report a notice. The `edit` keybind can replace the default `e`.
+## Make it yours
 
-The header labels the active comparison as **HEAD** or **last clear
-(contents at last clear)**. A coloured newest-to-oldest age-dot legend appears
-at the top right only when it fits beside the full header text. The Files box's bottom border shows change counts and the observed Git
-root path, shortening long paths from the left to keep the repository name visible.
-Wide file panes also show entry counts and history size there. The single-row header
-and one-row footer leave the remaining height for files and history; narrow
-terminals use shorter labels. Progress, warnings, and search
-share the footer with help/quit hints. Notifications disappear after three seconds
-or immediately on keyboard, mouse, or paste input, restoring the keybind hints.
-An accent-to-muted gradient sweeps across notification text to show time remaining;
-reduced-motion and disabled-animation modes keep the text static. It also shows the current branch (or detached HEAD / unborn branch) and updates
-on branch switches, including switches between branches at the same commit.
-
-Tree symbols: `+` new, `~` modified, `−` deleted tombstone, `·` no net change.
-These describe the active baseline. `XY` independently describes the Git index
-and working tree, with `??` for untracked files. Git letters occupy a fixed left
-column, independent of indentation and motion. A small `●` beside each file
-shows relative modification-time recency using the gradient shown in the header.
-The original theme runs from cyan through blue and amber to muted for the oldest;
-Ashen runs from warm orange through gold and teal to muted. Equal timestamps get equal colors.
-The scale ranks all affected tree files and updates on observed filesystem changes;
-it does not fade with wall time or shift when searching. Initial snapshots use
-filesystem modification times. Staging alone preserves their age. Metadata-only touches may change
-the rank without adding edit history. Deleted files use their observed deletion time. Modification
-times are filesystem metadata and can be preserved by external tools; they are
-not a reliable record of every edit.
-A staged change canceled by the working contents has a status-only explanation. Reliably detected staged renames
-show their origin; otherwise paths appear as deletion and creation. History uses
-UTC timestamps. Oversized entries initially collapse. Wide lines are clipped to
-the panel width; focus history and use Left/Right or h/l to scroll through them.
-Entry headers and selection markers stay fixed, and retained text is unchanged.
-
-Repeated saves record observed transitions. New entries appear above older entries;
-live-follow stays at the top. Scroll down to read older history. While paused,
-incoming entries preserve your reading position by entry identity. Undo records a reverse edit. Events
-inside the debounce window coalesce; this is not a keystroke recorder. Files
-reverted to baseline leave the tree once Git also reports no local changes;
-their observed transitions remain readable in history.
-Deleted untracked files leave the tree immediately; their observed transitions
-remain readable in history. Recreating them restores their tree rows.
-HEAD changes automatically start a fresh snapshot with an explanatory boundary
-notice. Staging alone updates Git status without adding a content edit.
-
-`--help` lists configuration. Defaults:
-
-- 1,000 history entries or 64 MiB, whichever is reached first.
-- 1 MiB maximum textual file; larger/binary files get size/status summaries.
-- 256 MiB retained snapshot text budget. Beyond it, fingerprints remain accurate
-  and unavailable text is explicitly summarized. Clear must read all candidate
-  files to capture a baseline; its progress appears in the footer.
-- 75 ms burst debounce, with a 250 ms maximum coalescing window.
-- Safety reconciliation every 30 seconds. Overflow and watcher errors mark a
-  history gap; only observed endpoints are compared. `--reconcile-seconds`
-  controls the safety interval. Inaccessible files retain their last observation
-  and retry on reconciliation.
-- Transparent terminal background with dark (original default), light, and Ashen palettes. Rounded
-  panels, connected history entries, clipped spring entrances with a bounded
-  overshoot, eased exits, fading activity
-  highlights, and a refresh spinner.
-- Frame submissions capped at 60 FPS by default; `--fps 120` or `--fps 144`
-  raises the cap (1–240). Motion follows elapsed time, so slow frames skip ahead
-  without queuing animation work. Only activity and refreshes animate; idle
-  operation does not redraw. Both panes retain their chosen width across toggles
-  and terminal resizes. Narrow layouts keep the stored ratio for later.
-- `--reduced-motion` retains brief bold activity emphasis; `--no-animations`
-  removes it. `--theme light` or `--theme ashen` changes the palette. Ashen uses warm ember
-  accents and greys inspired by the Ashen Neovim theme.
-
-A single background worker owns Git and diff computation. Bounded notification,
-command, and result channels prevent work from accumulating indefinitely. Normal
-file events query only the affected paths; metadata changes, directory changes,
-and safety recovery reconcile Git status. Refreshes publish small batches with
-progress, while terminal input stays on the UI thread. Overflow replaces queued
-path work with a reconciliation. Results are ordered by one worker, so older
-parallel computations cannot overwrite newer observations. The UI builds only
-visible history lines. Idle operation performs no terminal redraws.
-
-Symlink targets are displayed as text without opening their destination; parent
-symlinks are not traversed. Submodules are opaque paths; nested events are
-ignored and dirty status reconciles periodically. Native watchers may still
-subscribe to nested directories at the operating-system level. Non-UTF-8 path
-names produce an explicit error; non-UTF-8 contents get binary summaries. Git
-clean/smudge filters and working-tree encoding conversions are not executed.
-For UTF-8 text with Git line-ending conversion enabled (`core.autocrlf`, `text`,
-or `eol` attributes), Recon compares and displays LF-normalized text, so CRLF
-checkouts do not invent edit hunks. `-text`, binary data, and symlink targets retain
-their exact bytes. Without configured conversion, line endings remain significant.
-Executable bits are ignored when `core.filemode=false` or on Windows; repositories
-with `core.symlinks=false` compare tracked symlink targets against plain checkout
-files. A multi-file baseline
-capture observes each file once; it is not an atomic filesystem snapshot.
-
-There is no portable display-refresh/vsync callback in Recon's text terminal
-connection. `--fps` controls application frame submission, not monitor refresh.
-The terminal controls actual painting and monitor synchronization (for example,
-[Ghostty's window-vsync](https://ghostty.org/docs/config/reference#window-vsync)
-and [kitty's sync_to_monitor](https://sw.kovidgoyal.net/kitty/conf/#opt-kitty.sync_to_monitor)).
-Recon brackets frames with synchronized-update sequences to reduce partial-frame
-tearing on supporting terminals. That protocol groups a complete frame; it does
-not provide display timing or guarantee the requested FPS. Unsupported terminals
-can ignore the sequences.
-
-Search matches substrings of the full repository-relative path, ignoring case.
-Matching parents expand temporarily without changing saved collapse state. Search
-also limits visible history to matching paths; selecting a result narrows it to
-that file. Esc while typing restores the prior query and selection. Esc after
-accepting clears the search and restores aggregate history. Search, sidebar width,
-and focus are in-memory session preferences.
-
-## User configuration
-
-Recon creates `config.toml` with documented defaults on first use:
-
-- Unix/macOS: `$XDG_CONFIG_HOME/recon/config.toml`, falling back to
-  `~/.config/recon/config.toml` when the variable is empty or not absolute.
-- Windows: `%APPDATA%\recon\config.toml` (Roaming AppData).
-- `--config PATH` selects a different file and creates it if missing.
-
-Command-line options override file settings. Existing files are never overwritten;
-invalid or unknown settings report an error with the file path. Partial configs
-are supported. Restart Recon after editing. The shipped
-[default config](config.default.toml) documents every setting, including frame cap,
-spring duration, initial sidebar width, theme, ignores, and memory
-budgets. For example:
-
-```toml
-fps = 120
-animation_ms = 800
-sidebar_width = 68
-theme = "dark"
-ignore = ["generated/**"]
+```sh
+recon --theme ashen
+recon --theme light --reduced-motion
+recon --ignore 'generated/**' --ignore '*.tmp'
+recon --once                         # print a snapshot and exit
+recon --help                         # all command-line options
 ```
 
-Keybinds can be replaced individually in a `[keybinds]` table. Help, footer hints,
-and empty-history hints display your configured keys. Omitted actions keep their
-defaults; an empty list disables an action. Duplicate keys across actions fail
-with an error (unbind or move the other action when reusing its key).
+Recon creates a documented `config.toml` on first use:
+
+- **macOS/Linux:** `$XDG_CONFIG_HOME/recon/config.toml`, or
+  `~/.config/recon/config.toml` if the variable is unset, empty, or not absolute.
+- **Windows:** `%APPDATA%\recon\config.toml`.
+- **Custom location:** `recon --config /path/to/config.toml`.
+
+For example:
 
 ```toml
-theme = "ashen" # "dark" is the original default; "light" also supported
+theme = "ashen"                 # dark (default), light, or ashen
+reduced_motion = true
+ignore = ["generated/**"]
 
 [keybinds]
 quit = ["Ctrl-x"]
-down = ["j", "Down"]
 clear = ["Alt-c"]
 ```
 
-Keys accept single case-sensitive characters, `Space`, `Enter`, `Esc`, `Tab`,
-`BackTab`, arrows, `PageUp`, `PageDown`, `Home`, `End`, `Backspace`, `Delete`,
-`Insert`, and `F1`–`F24`, with optional `Ctrl-`, `Alt-`, or `Shift-` prefixes. Prefer uppercase
-characters for shifted letters. While entering a search, printable characters
-edit the query and Enter/Esc/Backspace/Ctrl-U keep their editing functions.
-Any key closes help. The complete action list is in the default config.
+Restart Recon after editing the config. Command-line options override file
+settings. See the [default configuration](config.default.toml) for all options
+and the [user guide](docs/GUIDE.md) for keybinding rules and detailed behavior.
 
-Boolean CLI flags can override either direction:
-`--no-animations` enables that option, while `--no-animations=false` overrides a
-config that disables animations. The same applies to `--reduced-motion=false`.
-Configuration loading is separate from pure CLI parsing in the Rust library, so
-library fixtures and benchmarks can retain deterministic defaults.
+By default, Recon retains up to **1,000 history entries or 64 MiB**, whichever
+comes first. Text files above **1 MiB** get summaries; retained snapshot text has
+a separate **256 MiB** budget. Git ignore rules and your extra ignore patterns
+limit which paths are observed.
 
-## Development and validation
+## More information
 
-```sh
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-python3 scripts/benchmark.py
-python3 scripts/memory_stress.py
-python3 scripts/smoke_ui.py --large
-python3 scripts/animation_smoke.py
-python3 scripts/config_smoke.py
-python3 scripts/editor_smoke.py             # Unix/macOS PTY with a fake editor
-```
+- [User guide](docs/GUIDE.md): navigation, history behavior, configuration, and limitations.
+- [Changelog](CHANGELOG.md): release notes.
+- [Development](docs/DEVELOPMENT.md) and [performance notes](docs/PERFORMANCE.md).
+- [Release operations](docs/RELEASES.md) for maintainers.
+- [Screenshot capture](docs/SCREENSHOTS.md): reproduce the examples above.
 
-Tests create disposable repositories and cover baseline transitions, repeated
-edits, undo, delete/recreate, staged cancellation, ignores, retention, binary
-files, symlinks, linked worktrees, HEAD boundaries, missed-event reconciliation,
-atomic saves, nested repositories, cancellation, and narrow terminal rendering. The benchmark creates 100,000
-tracked files, 10,000 local changes, and a 2,000-file burst; fixture creation is
-excluded from startup/latency measurements. See [performance notes](docs/PERFORMANCE.md)
-for measured results and remaining validation scope.
-
-[Livediff](https://github.com/SoCkEt7/Livediff) informed the live terminal viewing
-reference: native notifications, burst coalescing, and a Rust terminal UI. Recon's
-baseline and retained transition history implementation is independent.
+Recon is MIT licensed. Its live terminal viewing approach was informed
+by [Livediff](https://github.com/SoCkEt7/Livediff); Recon's baseline and retained
+transition history implementation is independent.

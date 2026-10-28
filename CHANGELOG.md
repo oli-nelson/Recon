@@ -6,6 +6,10 @@ a fresh Unreleased section. Released versions are listed newest first.
 
 ## [Unreleased]
 
+- Add an end-user quick start, detailed user guide, and reproducible screenshots
+  demonstrating Git status, successive edits, and fresh comparison baselines.
+  Include the linked documentation and images in release archives.
+
 - View live Git changes in a terminal file tree, including staged, unstaged, and
   untracked files in repositories and linked worktrees. Compare against HEAD or
   capture current contents as a fresh baseline without modifying the repository.
