@@ -11,6 +11,8 @@ a fresh Unreleased section. Released versions are listed newest first.
 - Reuse HEAD blob fingerprints and bounded text across refreshes, and suppress
   Git-ignored build events while preserving tracked files and prior observations.
 
+## [0.1.1] - 2026-10-28
+
 - Dissolve newly created and restored file labels into the tree with the reverse
   of the deletion animation, keeping Git status and tree guides fixed.
 
