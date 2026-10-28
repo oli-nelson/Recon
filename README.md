@@ -1,5 +1,7 @@
 # Recon
 
+https://github.com/user-attachments/assets/4c2f1d95-6850-4693-866a-378c05c6565c
+
 **Watch your Git changes as they happen.** Recon is a terminal app that shows
 changed files alongside a live history of the edits it observes. Keep it open
 beside your editor to follow your own work, review an agent's edits, or see how a
