@@ -282,7 +282,11 @@ pub fn run(config: &Config, worker: Worker) -> Result<()> {
                         if !config.no_animations
                             && !config.reduced_motion
                             && !row.remove_from_tree
-                            && !model.files.contains_key(&row.path)
+                            && row.status != Status::Deleted
+                            && model
+                                .files
+                                .get(&row.path)
+                                .is_none_or(|old| old.status == Status::Deleted)
                         {
                             view.arrivals.insert(row.path.clone(), Instant::now());
                         }
@@ -869,20 +873,13 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                         Status::Deleted | Status::Unchanged => muted,
                     };
                     let age = file.activity.elapsed();
-                    let motion_age = view
-                        .arrivals
-                        .get(&file.path)
-                        .map_or(duration, Instant::elapsed);
-                    let distance = tree_rect.width.saturating_sub(12 + (r.depth as u16) * 2);
-                    let motion = animation::slide(
-                        motion_age,
-                        duration,
-                        !config.no_animations && !config.reduced_motion,
-                        false,
-                        distance,
-                    );
+                    let arriving = !config.no_animations
+                        && !config.reduced_motion
+                        && view
+                            .arrivals
+                            .get(&file.path)
+                            .is_some_and(|start| start.elapsed() < duration);
                     let deleted = file.status == Status::Deleted;
-                    let motion = if deleted { 0 } else { motion };
                     let active = age < duration && !config.no_animations && !deleted;
                     let color = animation::glow(
                         color,
@@ -910,11 +907,17 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                                     .recency(animation::relative_age(file.modified_at, &times))),
                         ),
                         Span::styled(
-                            format!(
-                                "{indent}{}{} {name}",
-                                " ".repeat((2 + motion).max(0) as usize),
-                                file.status.symbol()
-                            ),
+                            if arriving && !deleted {
+                                format!(
+                                    "{indent}  {}",
+                                    " ".repeat(
+                                        Span::raw(format!("{} {name}", file.status.symbol()))
+                                            .width()
+                                    )
+                                )
+                            } else {
+                                format!("{indent}  {} {name}", file.status.symbol())
+                            },
                             Style::default().fg(color).add_modifier(if active {
                                 Modifier::BOLD
                             } else {
@@ -972,7 +975,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             .with_selected(selected);
         frame.render_stateful_widget(list, tree_rect, &mut state);
         view.tree_offset = state.offset();
-        // Keep the muted tombstone in place while a coloured copy departs over it.
+        // Departures dissolve over a muted tombstone; arrivals reverse the effect.
         // Render only the label so Git status, recency, and tree guides stay fixed.
         if !config.no_animations && !config.reduced_motion {
             let inner = inset(tree_rect);
@@ -984,14 +987,28 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                 .filter(|(_, row)| !row.dir)
             {
                 let file = &model.files[&row.key];
-                let age = file.activity.elapsed();
-                if file.status != Status::Deleted || age >= duration {
+                let departing = file.status == Status::Deleted;
+                let age = if departing {
+                    file.activity.elapsed()
+                } else if let Some(start) = view.arrivals.get(&file.path) {
+                    start.elapsed()
+                } else {
+                    continue;
+                };
+                if age >= duration {
                     continue;
                 }
+                let progress = animation::progress(age, duration);
+                let effect_age = if departing {
+                    age
+                } else {
+                    duration.saturating_sub(age)
+                };
                 let distance = tree_rect.width.saturating_sub(12 + row.depth as u16 * 2);
                 // A short flight leaves room to watch the copy dissolve even
                 // when the tree pane is narrow.
-                let motion = animation::slide(age, duration, true, true, distance.min(16)) as u16;
+                let motion =
+                    animation::slide(effect_age, duration, true, true, distance.min(16)) as u16;
                 // List reserves two cells for the selection marker, then six for
                 // Git status/recency, followed by indentation and label padding.
                 let x = inner.x.saturating_add(10 + row.depth as u16 * 2 + motion);
@@ -1000,15 +1017,21 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                     continue;
                 }
                 let name = row.key.rsplit('/').next().unwrap_or(&row.key);
-                let color = animation::glow(negative, age, duration, true, light);
+                let color = match file.status {
+                    Status::Deleted => negative,
+                    Status::New => positive,
+                    Status::Modified => gold,
+                    Status::Unchanged => muted,
+                };
+                let color = animation::glow(color, age, duration, true, light);
                 let mut style = Style::default().fg(color).add_modifier(Modifier::BOLD);
                 if selected == Some(state.offset() + index) {
                     style = style.add_modifier(Modifier::UNDERLINED);
                 }
                 render_departing_label(
-                    &format!("− {name}"),
+                    &format!("{} {name}", file.status.symbol()),
                     style,
-                    animation::progress(age, duration),
+                    if departing { progress } else { 1.0 - progress },
                     Rect::new(x, inner.y + index as u16, right - x, 1),
                     frame.buffer_mut(),
                 );
@@ -2295,47 +2318,75 @@ mod tests {
         assert!(view.sidebar);
     }
     #[test]
-    fn spring_entrance_is_clipped_then_overshoots_without_moving_status() {
-        let model = history_model();
-        let config = Config::parse_from(["recon"]);
-        let mut view = View::new();
-        view.sidebar = false;
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
-        let line = |terminal: &Terminal<TestBackend>| {
+    fn arrivals_dissolve_in_without_moving_status_and_respect_motion_settings() {
+        use std::time::Duration;
+
+        for theme in ["dark", "light", "ashen"] {
+            let model = history_model();
+            let mut config = Config::parse_from(["recon", "--theme", theme]);
+            config.animation_ms = 100_000;
+            let duration = Duration::from_millis(config.animation_ms);
+            let mut view = View::new();
+            view.sidebar = false;
+            view.selected = Some("dir/file0.rs".into());
+            let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+            let row = |terminal: &Terminal<TestBackend>| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(100)
+                    .nth(3)
+                    .unwrap()
+                    .to_vec()
+            };
             terminal
-                .backend()
-                .buffer()
-                .content
-                .chunks(100)
-                .nth(3)
-                .unwrap()
-                .iter()
-                .map(|c| c.symbol())
-                .collect::<String>()
-        };
-        view.arrivals.insert("dir/file0.rs".into(), Instant::now());
-        terminal
-            .draw(|f| draw(f, &model, &mut view, &config))
-            .unwrap();
-        let initial = line(&terminal);
-        assert!(!initial.contains("file0.rs"));
-        assert!(initial.contains('M'));
-        view.arrivals.insert(
-            "dir/file0.rs".into(),
-            Instant::now() - std::time::Duration::from_millis(400),
-        );
-        terminal
-            .draw(|f| draw(f, &model, &mut view, &config))
-            .unwrap();
-        let spring = line(&terminal);
-        view.arrivals.clear();
-        terminal
-            .draw(|f| draw(f, &model, &mut view, &config))
-            .unwrap();
-        let settled = line(&terminal);
-        assert!(spring.find("file0.rs").unwrap() < settled.find("file0.rs").unwrap());
-        assert_eq!(initial.find('M'), settled.find('M'));
-        assert_eq!(spring.find('M'), settled.find('M'));
+                .draw(|f| draw(f, &model, &mut view, &config))
+                .unwrap();
+            let settled = row(&terminal);
+            for progress in [0.0, 0.3, 0.6, 1.0] {
+                view.arrivals.insert(
+                    "dir/file0.rs".into(),
+                    Instant::now() - duration.mul_f64(progress),
+                );
+                terminal
+                    .draw(|f| draw(f, &model, &mut view, &config))
+                    .unwrap();
+                let animated = row(&terminal);
+                // Selection, Git status, recency, and indentation remain stationary.
+                assert_eq!(animated[..13], settled[..13]);
+                let text: String = animated.iter().map(|cell| cell.symbol()).collect();
+                if progress == 0.0 {
+                    assert!(!text.contains("file0.rs"));
+                    assert!(animated[13..40].iter().all(|cell| cell.symbol() == " "));
+                } else if progress == 0.3 {
+                    let visible = animated[13..40]
+                        .iter()
+                        .filter(|cell| cell.symbol() != " ")
+                        .count();
+                    assert!(visible > 0 && visible < 9);
+                } else if progress == 0.6 {
+                    assert!(text.contains("file0.rs"));
+                    let x = animated
+                        .iter()
+                        .position(|cell| cell.symbol() == "f")
+                        .unwrap();
+                    assert!(animated[x].modifier.contains(Modifier::UNDERLINED));
+                } else {
+                    assert_eq!(animated, settled);
+                }
+            }
+            for (no_animations, reduced_motion) in [(true, false), (false, true)] {
+                config.no_animations = no_animations;
+                config.reduced_motion = reduced_motion;
+                view.arrivals.insert("dir/file0.rs".into(), Instant::now());
+                terminal
+                    .draw(|f| draw(f, &model, &mut view, &config))
+                    .unwrap();
+                let text: String = row(&terminal).iter().map(|cell| cell.symbol()).collect();
+                assert!(text.contains("~ file0.rs"));
+            }
+        }
     }
     #[test]
     fn deletion_reveals_a_stationary_muted_row_beneath_the_departing_label() {

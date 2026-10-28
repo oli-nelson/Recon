@@ -6,6 +6,9 @@ a fresh Unreleased section. Released versions are listed newest first.
 
 ## [Unreleased]
 
+- Dissolve newly created and restored file labels into the tree with the reverse
+  of the deletion animation, keeping Git status and tree guides fixed.
+
 ## [0.1.0] - 2026-10-28
 
 - Add an end-user quick start, detailed user guide, and reproducible screenshots
