@@ -1601,7 +1601,7 @@ fn draw_unpushed(frame: &mut Frame, area: Rect, model: &Model, muted: Color, acc
         (
             commits.titles[commits.titles.len() - visible..]
                 .iter()
-                .map(|title| Line::raw(format!(" {title}")))
+                .map(|title| Line::raw(format!(" • {title}")))
                 .collect::<Vec<_>>(),
             accent,
         )
