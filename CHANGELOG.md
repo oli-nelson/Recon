@@ -6,6 +6,8 @@ a fresh Unreleased section. Released versions are listed newest first.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-30
+
 - Show bulleted unpushed commit titles in an automatically sized panel below Files
   only when commits are pending, with newest commits last. Toggle it with `u` or the
   Files header button, shown only while commits are pending; refresh as the
