@@ -1052,7 +1052,10 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         ))
         .style(Style::default().fg(if view.unpushed_visible { accent } else { muted }));
         let toggle_width = toggle.width() as u16;
-        if tree_rect.width >= toggle_width + 9 && tree_rect.height > 0 {
+        if !model.unpushed.titles.is_empty()
+            && tree_rect.width >= toggle_width + 9
+            && tree_rect.height > 0
+        {
             view.unpushed_toggle = Some(Rect::new(
                 tree_rect.right() - 1 - toggle_width,
                 tree_rect.y,
