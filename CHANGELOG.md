@@ -6,6 +6,11 @@ a fresh Unreleased section. Released versions are listed newest first.
 
 ## [Unreleased]
 
+- Show unpushed commit titles in an automatically sized panel below Files only
+  when commits are pending, with newest commits last. Toggle it with `u` or the
+  Files header button; refresh as the branch or its upstream changes. Cap its
+  height at five titles by default, configurable with `unpushed_visible_commits`
+  or `--unpushed-visible-commits`.
 - Keep large change trees responsive by caching their structure and rendering only
   visible rows; update live rows without rescanning the entire model per batch.
 - Reuse HEAD blob fingerprints and bounded text across refreshes, and suppress

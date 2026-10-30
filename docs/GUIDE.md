@@ -15,6 +15,7 @@
 | `h` / `l`, Left/Right | Files: collapse/expand directories; history: scroll horizontally |
 | `Tab` | Switch focus; switch panes in narrow terminals |
 | `d` | Hide / show history without losing its filter or reading position |
+| `u` | Hide / show unpushed commits; also click the button in the Files header |
 | `Enter` | Open/focus selected file history; toggle directories or focused history entries |
 | `e` | Open the focused file in your editor |
 | `PageUp` / `PageDown` | Scroll history, pausing live follow |
@@ -56,6 +57,19 @@ or immediately on keyboard, mouse, or paste input, restoring the keybind hints.
 An accent-to-muted gradient sweeps across notification text to show time remaining;
 reduced-motion and disabled-animation modes keep the text static. It also shows the current branch (or detached HEAD / unborn branch) and updates
 on branch switches, including switches between branches at the same commit.
+
+The **Unpushed** panel below Files appears only when there are commits ahead of the current branch's
+configured upstream, using local Git refs without fetching. Titles grow upward
+from the bottom, with newer commits last. Its height fits the titles and borders,
+up to `unpushed_visible_commits` titles (default **5**), leaving at least three
+file rows. Set `unpushed_visible_commits = 3` at the top level of `config.toml`,
+or pass `--unpushed-visible-commits 3`, to change the limit (minimum **1**).
+When the list exceeds the limit or available height,
+the newest titles remain visible and the heading shows the full count. Branches
+without an upstream, detached HEADs, and empty repositories hide the panel.
+Press `u` or click the Files header button to toggle it; this preference lasts
+for the session, including across branch changes. The `toggle_unpushed` keybind
+can replace `u`. The panel hides in very short terminals to preserve file rows.
 
 Tree symbols: `+` new, `~` modified, `−` deleted tombstone, `·` no net change.
 These describe the active baseline. `XY` independently describes the Git index

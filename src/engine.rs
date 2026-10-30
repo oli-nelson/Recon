@@ -56,6 +56,7 @@ impl Engine {
         let head = self.repo.head()?;
         let branch = self.repo.branch()?;
         let statuses = self.repo.statuses(None)?;
+        let unpushed = self.repo.unpushed_commits()?;
         let mut captured = None;
         let mut captured_bytes = 0;
         if clear {
@@ -107,6 +108,7 @@ impl Engine {
             reason: reason.into(),
             branch,
         });
+        emit(Update::Unpushed(unpushed));
         if clear {
             emit(Update::Notice(
                 "Cleared • only subsequent activity will appear".into(),
@@ -200,6 +202,9 @@ impl Engine {
         }
         emit(Update::Progress("Refreshing…".into()));
         let reconciled = paths.is_none();
+        if reconciled {
+            emit(Update::Unpushed(self.repo.unpushed_commits()?));
+        }
         let mut paths = if let Some(paths) = paths {
             let statuses = self.repo.statuses(Some(&paths))?;
             for path in &paths {

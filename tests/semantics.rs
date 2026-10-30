@@ -53,6 +53,76 @@ fn refresh(e: &mut Engine, m: &mut Model) {
 }
 
 #[test]
+fn unpushed_commits_follow_upstream_refs_and_survive_clearing_history() {
+    let d = fixture();
+    git(d.path(), &["branch", "published"]);
+    git(d.path(), &["branch", "--set-upstream-to=published"]);
+    git(
+        d.path(),
+        &[
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "Older title\n\nBody omitted",
+        ],
+    );
+    git(d.path(), &["commit", "--allow-empty", "-qm", "Newer title"]);
+    let (mut engine, mut model) = setup(&d);
+    reset(&mut engine, &mut model, false);
+    assert_eq!(model.unpushed.titles, ["Older title", "Newer title"]);
+    assert_eq!(model.unpushed.unavailable, None);
+    reset(&mut engine, &mut model, true);
+    assert_eq!(model.unpushed.titles, ["Older title", "Newer title"]);
+    // Upstream changes without a HEAD change must refresh the list too.
+    git(d.path(), &["update-ref", "refs/heads/published", "HEAD~1"]);
+    refresh(&mut engine, &mut model);
+    assert_eq!(model.unpushed.titles, ["Newer title"]);
+    git(d.path(), &["update-ref", "refs/heads/published", "HEAD"]);
+    refresh(&mut engine, &mut model);
+    assert!(model.unpushed.titles.is_empty());
+    git(d.path(), &["branch", "--unset-upstream"]);
+    refresh(&mut engine, &mut model);
+    assert_eq!(
+        model.unpushed.unavailable.as_deref(),
+        Some("No upstream branch")
+    );
+    git(d.path(), &["checkout", "--detach", "-q"]);
+    refresh(&mut engine, &mut model);
+    assert!(model.unpushed.titles.is_empty());
+    assert_eq!(model.unpushed.unavailable.as_deref(), Some("Detached HEAD"));
+}
+
+#[test]
+fn unpushed_commits_handle_unborn_and_diverged_branches() {
+    let empty = tempfile::tempdir().unwrap();
+    git(empty.path(), &["init", "-q"]);
+    let (mut engine, mut model) = setup(&empty);
+    reset(&mut engine, &mut model, false);
+    assert_eq!(
+        model.unpushed.unavailable.as_deref(),
+        Some("No commits yet")
+    );
+
+    let d = fixture();
+    git(d.path(), &["checkout", "-qb", "published"]);
+    git(
+        d.path(),
+        &["commit", "--allow-empty", "-qm", "Upstream only"],
+    );
+    git(d.path(), &["checkout", "-qb", "local", "HEAD~1"]);
+    git(d.path(), &["branch", "--set-upstream-to=published"]);
+    git(d.path(), &["commit", "--allow-empty", "-qm", "Local only"]);
+    let (mut engine, mut model) = setup(&d);
+    reset(&mut engine, &mut model, false);
+    assert_eq!(model.unpushed.titles, ["Local only"]);
+    git(d.path(), &["merge", "--no-edit", "published"]);
+    refresh(&mut engine, &mut model);
+    assert_eq!(model.unpushed.titles.len(), 2);
+    assert_eq!(model.unpushed.titles[0], "Local only");
+    assert!(model.unpushed.titles[1].starts_with("Merge"));
+}
+
+#[test]
 fn configured_crlf_checkout_does_not_invent_changes_on_watcher_events() {
     let d = fixture();
     git(d.path(), &["config", "core.autocrlf", "true"]);

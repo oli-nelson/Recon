@@ -258,6 +258,7 @@ fn classify(raw: &Path, engine: &Engine) -> Option<Option<String>> {
         if name == "index"
             || name == "HEAD"
             || name == "packed-refs"
+            || name == "config"
             || name == "exclude"
             || path.components().any(|p| p.as_os_str() == "refs")
         {

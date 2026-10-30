@@ -44,6 +44,8 @@ pub struct View {
     pub selected: Option<String>,
     pub collapsed: BTreeSet<String>,
     pub sidebar: bool,
+    pub unpushed_visible: bool,
+    unpushed_toggle: Option<Rect>,
     pub panel_focus: bool,
     pub following: bool,
     pub scroll: usize,
@@ -75,6 +77,7 @@ impl View {
             tree_percent: 32,
             started: Some(Instant::now()),
             sidebar: true,
+            unpushed_visible: true,
             following: true,
             ..Self::default()
         }
@@ -438,6 +441,15 @@ fn resize_split(view: &mut View, percent: u16) {
 fn handle_mouse(mouse: MouseEvent, view: &mut View) -> bool {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
+            if !view.help
+                && view.unpushed_toggle.is_some_and(|area| {
+                    area.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                })
+            {
+                view.unpushed_visible = !view.unpushed_visible;
+                view.dragging = false;
+                return true;
+            }
             view.dragging = view.sidebar
                 && view.divider.is_some_and(|x| x.abs_diff(mouse.column) <= 1)
                 && mouse.row >= view.split_area.y
@@ -614,6 +626,7 @@ fn handle_key(
                 view.unseen = 0;
             }
         }
+        Char('u') => view.unpushed_visible = !view.unpushed_visible,
         Char('[') => resize_split(view, view.tree_percent.saturating_sub(5)),
         Char(']') => resize_split(view, view.tree_percent.saturating_add(5)),
         Tab if view.sidebar => view.panel_focus = !view.panel_focus,
@@ -884,7 +897,18 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
     } else {
         (parts[1], parts[1])
     };
+    let (tree_rect, commits_rect) = files_split(
+        tree_rect,
+        model
+            .unpushed
+            .titles
+            .len()
+            .min(config.unpushed_visible_commits as usize),
+        view.unpushed_visible,
+    );
+    view.unpushed_toggle = None;
     if tree_visible {
+        draw_unpushed(frame, commits_rect, model, muted, accent);
         let rows = tree(model, view);
         let selected = view
             .selected
@@ -1017,12 +1041,34 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
             format!("{root_label}{root} "),
             Style::default().fg(muted),
         ));
-        let block = Block::default()
+        let toggle = Line::from(format!(
+            " [{}{}] ",
+            config.keybinds.label(Action::ToggleUnpushed),
+            if tree_rect.width >= 24 {
+                " commits"
+            } else {
+                ""
+            }
+        ))
+        .style(Style::default().fg(if view.unpushed_visible { accent } else { muted }));
+        let toggle_width = toggle.width() as u16;
+        if tree_rect.width >= toggle_width + 9 && tree_rect.height > 0 {
+            view.unpushed_toggle = Some(Rect::new(
+                tree_rect.right() - 1 - toggle_width,
+                tree_rect.y,
+                toggle_width,
+                1,
+            ));
+        }
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .title(" Files ")
             .title_bottom(Line::from(stats))
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(if !view.panel_focus { accent } else { muted }));
+        if view.unpushed_toggle.is_some() {
+            block = block.title_top(toggle.right_aligned());
+        }
         let list = List::new(items)
             .highlight_symbol("▸ ")
             .highlight_spacing(HighlightSpacing::Always)
@@ -1349,6 +1395,7 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         (Action::Clear, "clear"),
         (Action::GitSnapshot, "HEAD"),
         (Action::ToggleHistory, "panel"),
+        (Action::ToggleUnpushed, "commits"),
         (Action::Focus, "focus"),
         (Action::Quit, "quit"),
     ]
@@ -1430,13 +1477,6 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
     }
     if view.help {
         let area = frame.area();
-        let popup = Rect::new(
-            area.width.saturating_sub(66) / 2,
-            area.height.saturating_sub(21) / 2,
-            area.width.min(66),
-            area.height.min(21),
-        );
-        frame.render_widget(Clear, popup);
         let groups: &[(&[Action], &str)] = &[
             (&[Action::Search], "Search file paths"),
             (&[Action::Edit], "Open file in VISUAL / EDITOR"),
@@ -1449,6 +1489,10 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
                 "Clear history; compare against HEAD",
             ),
             (&[Action::ToggleHistory], "Hide/show history"),
+            (
+                &[Action::ToggleUnpushed],
+                "Hide/show unpushed commits (also click Files button)",
+            ),
             (&[Action::Focus], "Switch focus / narrow-terminal view"),
             (&[Action::Down, Action::Up], "Navigate / scroll down/up"),
             (
@@ -1495,6 +1539,14 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         lines.push(Line::from(
             " Git: index/worktree; ?? untracked. Drag divider to resize.",
         ));
+        let height = (lines.len() as u16 + 2).min(area.height);
+        let popup = Rect::new(
+            area.x + area.width.saturating_sub(66) / 2,
+            area.y + area.height.saturating_sub(height) / 2,
+            area.width.min(66),
+            height,
+        );
+        frame.render_widget(Clear, popup);
         frame.render_widget(
             Paragraph::new(lines)
                 .block(
@@ -1508,6 +1560,67 @@ pub fn draw(frame: &mut Frame, model: &Model, view: &mut View, config: &Config) 
         );
     }
 }
+fn files_split(area: Rect, commits: usize, visible: bool) -> (Rect, Rect) {
+    // Preserve usable file rows in very short terminals.
+    let height = if visible && commits > 0 && area.height >= 8 {
+        commits.saturating_add(2).min(usize::from(area.height - 5)) as u16
+    } else {
+        0
+    };
+    (
+        Rect::new(area.x, area.y, area.width, area.height - height),
+        Rect::new(area.x, area.bottom() - height, area.width, height),
+    )
+}
+
+fn draw_unpushed(frame: &mut Frame, area: Rect, model: &Model, muted: Color, accent: Color) {
+    if area.height == 0 {
+        return;
+    }
+    let commits = &model.unpushed;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(muted))
+        .title(format!(" Unpushed ({}) ", commits.titles.len()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let visible = commits.titles.len().min(inner.height as usize);
+    let (lines, color) = if commits.titles.is_empty() {
+        (
+            vec![Line::raw(format!(
+                " {}",
+                commits
+                    .unavailable
+                    .as_deref()
+                    .unwrap_or("No unpushed commits")
+            ))],
+            muted,
+        )
+    } else {
+        (
+            commits.titles[commits.titles.len() - visible..]
+                .iter()
+                .map(|title| Line::raw(format!(" {title}")))
+                .collect::<Vec<_>>(),
+            accent,
+        )
+    };
+    let content = Rect::new(
+        inner.x,
+        inner
+            .bottom()
+            .saturating_sub(lines.len() as u16)
+            .max(inner.y),
+        inner.width,
+        (lines.len() as u16).min(inner.height),
+    );
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(color)),
+        content,
+    );
+}
+
 /// Slice in terminal columns without splitting wide or combining graphemes.
 /// A partially hidden wide glyph leaves blank cells at the left edge.
 fn horizontal_slice(line: &Line<'_>, offset: u16, width: u16) -> Line<'static> {
@@ -1823,6 +1936,144 @@ mod tests {
                 assert!(!line.contains("/Users/oli"));
             }
         }
+    }
+
+    #[test]
+    fn unpushed_titles_grow_upward_and_keep_the_newest_visible() {
+        let config = Config::parse_from(["recon", "--no-animations"]);
+        let mut model = Model::new(100, 4096);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut view = View::new();
+        for count in [0, 2, 24] {
+            model.unpushed.titles = (0..count).map(|i| format!("Commit {i:02}")).collect();
+            terminal
+                .draw(|f| draw(f, &model, &mut view, &config))
+                .unwrap();
+            let (_, area) = files_split(
+                Rect::new(0, 1, 32, 22),
+                count.min(config.unpushed_visible_commits as usize),
+                true,
+            );
+            let lines: Vec<String> = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(100)
+                .map(|row| row.iter().take(32).map(|cell| cell.symbol()).collect())
+                .collect();
+            if count == 0 {
+                assert_eq!(area.height, 0);
+                assert!(!lines.iter().any(|line| line.contains("Unpushed")));
+            } else {
+                assert_eq!(area.height as usize, count.min(5) + 2);
+                assert!(lines[area.y as usize].contains(&format!("Unpushed ({count})")));
+                let bottom = area.bottom() as usize - 2;
+                assert!(lines[bottom].contains(&format!("Commit {:02}", count - 1)));
+                assert!(lines[bottom - 1].contains(&format!("Commit {:02}", count - 2)));
+                if count == 2 {
+                    assert!(lines[bottom - 2].contains("Unpushed (2)"));
+                } else {
+                    assert!(!lines.iter().any(|line| line.contains("Commit 00")));
+                }
+            }
+        }
+        model.unpushed.titles.clear();
+        model.unpushed.unavailable = Some("No upstream branch".into());
+        terminal
+            .draw(|f| draw(f, &model, &mut view, &config))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!text.contains("No upstream branch"));
+        assert!(!text.contains("Unpushed"));
+    }
+
+    #[test]
+    fn configured_unpushed_limit_caps_title_rows_and_keeps_the_newest() {
+        for limit in [1, 3, 7] {
+            let mut config = Config::parse_from(["recon", "--no-animations"]);
+            config.unpushed_visible_commits = limit;
+            for height in [10, 30] {
+                let mut terminal = Terminal::new(TestBackend::new(100, height)).unwrap();
+                let mut view = View::new();
+                let mut model = Model::new(100, 4096);
+                for count in [1, 2, 20] {
+                    model.unpushed.titles = (0..count).map(|i| format!("Commit {i:02}")).collect();
+                    terminal
+                        .draw(|f| draw(f, &model, &mut view, &config))
+                        .unwrap();
+                    let shown: Vec<String> = terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .chunks(100)
+                        .map(|row| {
+                            row.iter()
+                                .take(32)
+                                .map(|cell| cell.symbol())
+                                .collect::<String>()
+                        })
+                        .filter(|line| line.contains("Commit "))
+                        .collect();
+                    let expected = count.min(limit as usize).min(height as usize - 9);
+                    assert_eq!(shown.len(), expected);
+                    for (line, i) in shown.iter().zip(count - expected..count) {
+                        assert!(line.contains(&format!("Commit {i:02}")));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unpushed_toggle_works_by_key_and_button_and_keeps_its_preference() {
+        let mut config = Config::parse_from(["recon", "--no-animations"]);
+        config.keybinds = crate::keybinds::Keybinds::with_overrides(BTreeMap::from([(
+            Action::ToggleUnpushed,
+            vec!["p".into()],
+        )]))
+        .unwrap();
+        let mut model = Model::new(100, 4096);
+        model.unpushed.titles = vec!["Local commit".into()];
+        let mut view = View::new();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let (tx, _) = std::sync::mpsc::sync_channel(1);
+        let render = |terminal: &mut Terminal<TestBackend>, model: &Model, view: &mut View| {
+            terminal.draw(|f| draw(f, model, view, &config)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+        };
+        assert!(render(&mut terminal, &model, &mut view).contains("Local commit"));
+        let key = config.keybinds.resolve(KeyCode::Char('p').into()).unwrap();
+        handle_key(key, &mut model, &mut view, &tx, 24);
+        let hidden = render(&mut terminal, &model, &mut view);
+        assert!(!hidden.contains("Local commit"));
+        assert!(hidden.contains("[p commits]"));
+        model.unpushed.titles.clear();
+        render(&mut terminal, &model, &mut view);
+        model.unpushed.titles.push("Another commit".into());
+        assert!(!render(&mut terminal, &model, &mut view).contains("Another commit"));
+        let button = view.unpushed_toggle.unwrap();
+        assert!(handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: button.x + 1,
+                row: button.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut view
+        ));
+        assert!(render(&mut terminal, &model, &mut view).contains("Another commit"));
     }
 
     #[test]

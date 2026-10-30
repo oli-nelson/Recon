@@ -105,6 +105,57 @@ pub struct Repo {
     pub submodules: BTreeSet<String>,
 }
 impl Repo {
+    pub fn unpushed_commits(&self) -> Result<crate::model::UnpushedCommits> {
+        use crate::model::UnpushedCommits;
+        let unavailable = |message: &str| UnpushedCommits {
+            titles: Vec::new(),
+            unavailable: Some(message.into()),
+        };
+        let head = match self.git.head() {
+            Ok(head) => head,
+            Err(error)
+                if matches!(
+                    error.code(),
+                    git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+                ) =>
+            {
+                return Ok(unavailable("No commits yet"));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if !head.is_branch() {
+            return Ok(unavailable("Detached HEAD"));
+        }
+        let branch = git2::Branch::wrap(head);
+        let upstream = match branch.upstream() {
+            Ok(upstream) => upstream,
+            Err(error) if error.code() == git2::ErrorCode::NotFound => {
+                return Ok(unavailable("No upstream branch"));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut walk = self.git.revwalk()?;
+        walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
+        walk.push(branch.get().peel_to_commit()?.id())?;
+        walk.hide(upstream.get().peel_to_commit()?.id())?;
+        let mut titles = Vec::new();
+        for id in walk {
+            if self.cancel.load(Ordering::Relaxed) {
+                bail!("Cancelled");
+            }
+            let commit = self.git.find_commit(id?)?;
+            titles.push(
+                String::from_utf8_lossy(commit.summary_bytes().unwrap_or(b"(no title)"))
+                    .into_owned(),
+            );
+        }
+        titles.reverse();
+        Ok(UnpushedCommits {
+            titles,
+            unavailable: None,
+        })
+    }
+
     pub fn discover(path: &Path, ignores: &[String], max_text: u64) -> Result<Self> {
         let path = if path.is_file() {
             path.parent().unwrap_or(path)

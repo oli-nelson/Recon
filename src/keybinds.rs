@@ -21,6 +21,7 @@ pub enum Action {
     Expand,
     Focus,
     ToggleHistory,
+    ToggleUnpushed,
     Open,
     Edit,
     PageDown,
@@ -32,7 +33,7 @@ pub enum Action {
     Help,
 }
 impl Action {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Quit,
         Self::Clear,
         Self::GitSnapshot,
@@ -47,6 +48,7 @@ impl Action {
         Self::Expand,
         Self::Focus,
         Self::ToggleHistory,
+        Self::ToggleUnpushed,
         Self::Open,
         Self::Edit,
         Self::PageDown,
@@ -73,6 +75,7 @@ impl Action {
             Self::Expand => &["l", "Right"],
             Self::Focus => &["Tab"],
             Self::ToggleHistory => &["d"],
+            Self::ToggleUnpushed => &["u"],
             Self::Open => &["Enter"],
             Self::Edit => &["e"],
             Self::PageDown => &["PageDown"],

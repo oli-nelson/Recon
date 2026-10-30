@@ -45,6 +45,9 @@ pub struct Config {
     /// Initial history sidebar width, as a percentage
     #[arg(long, default_value_t = 68, value_parser = clap::value_parser!(u16).range(20..=85))]
     pub sidebar_width: u16,
+    /// Maximum number of commit titles shown in the unpushed panel
+    #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u16).range(1..))]
+    pub unpushed_visible_commits: u16,
     /// Duration of a row entrance, in milliseconds
     #[arg(long, default_value_t = 800, value_parser = clap::value_parser!(u64).range(200..=2000))]
     pub animation_ms: u64,

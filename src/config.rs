@@ -21,6 +21,7 @@ struct Settings {
     no_animations: Option<bool>,
     animation_ms: Option<u64>,
     sidebar_width: Option<u16>,
+    unpushed_visible_commits: Option<u16>,
     ignore: Option<Vec<String>>,
     history_entries: Option<u32>,
     history_bytes: Option<u64>,
@@ -63,6 +64,7 @@ impl Config {
         apply!(no_animations);
         apply!(animation_ms);
         apply!(sidebar_width);
+        apply!(unpushed_visible_commits);
         apply!(history_entries);
         apply!(history_bytes);
         apply!(max_text_bytes);
@@ -100,6 +102,7 @@ impl Config {
         range!(fps, 1, 240);
         range!(animation_ms, 200, 2000);
         range!(sidebar_width, 20, 85);
+        range!(unpushed_visible_commits, 1, u16::MAX);
         range!(history_entries, 1, u32::MAX);
         range!(history_bytes, 1024, usize::MAX as u64);
         range!(max_text_bytes, 1, usize::MAX as u64);
@@ -183,6 +186,24 @@ mod tests {
         assert!(config.reduced_motion);
         assert_eq!(config.ignores, ["*.tmp"]);
         assert!(fs::read_to_string(&path).unwrap().starts_with("fps = 144"));
+    }
+
+    #[test]
+    fn unpushed_limit_defaults_loads_and_accepts_cli_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert_eq!(load(&path, &["recon"]).unwrap().unpushed_visible_commits, 5);
+        fs::write(&path, "unpushed_visible_commits = 3\n").unwrap();
+        assert_eq!(load(&path, &["recon"]).unwrap().unpushed_visible_commits, 3);
+        assert_eq!(
+            load(&path, &["recon", "--unpushed-visible-commits", "2"])
+                .unwrap()
+                .unpushed_visible_commits,
+            2
+        );
+        assert!(load(&path, &["recon", "--unpushed-visible-commits", "0"]).is_err());
+        fs::write(&path, "unpushed_visible_commits = 0\n").unwrap();
+        assert!(load(&path, &["recon"]).is_err());
     }
 
     #[test]

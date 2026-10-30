@@ -9,6 +9,7 @@ no_animations = false
 animation_ms = 800 # 200–2000; spring entrance duration
 # Recency dots automatically rank observed file modification times.
 sidebar_width = 68 # 20–85; percent of terminal width, draggable during the session
+unpushed_visible_commits = 5 # maximum title rows; newest commits remain visible
 
 # Additional repository-relative ignore globs, alongside Git's ignore rules.
 ignore = [] # e.g. ["generated/**", "*.tmp"]
@@ -41,6 +42,7 @@ collapse = ["h", "Left"]
 expand = ["l", "Right"]
 focus = ["Tab"]
 toggle_history = ["d"]
+toggle_unpushed = ["u"]
 open = ["Enter"]
 edit = ["e"]
 page_down = ["PageDown"]

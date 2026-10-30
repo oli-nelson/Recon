@@ -59,10 +59,18 @@ pub enum Update {
         branch: String,
     },
     Files(Vec<(FileRow, Option<Entry>)>),
+    Unpushed(UnpushedCommits),
     Progress(String),
     Notice(String),
     WatchStatus(String),
     Done,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnpushedCommits {
+    /// Oldest first, so the tip of the branch appears at the bottom.
+    pub titles: Vec<String>,
+    pub unavailable: Option<String>,
 }
 #[derive(Debug, Clone, Copy)]
 pub enum Command {
@@ -83,6 +91,7 @@ pub struct Model {
     pub evicted: usize,
     pub baseline: String,
     pub branch: String,
+    pub unpushed: UnpushedCommits,
     pub message: String,
     pub refreshing: bool,
     refresh_started: Option<Instant>,
@@ -105,6 +114,7 @@ impl Model {
             evicted: 0,
             baseline: "HEAD".into(),
             branch: "…".into(),
+            unpushed: UnpushedCommits::default(),
             message: "Reading repository…".into(),
             refreshing: true,
             refresh_started: Some(Instant::now() - REFRESH_DELAY),
@@ -247,6 +257,7 @@ impl Model {
                 self.begin_refresh();
                 self.message = message;
             }
+            Update::Unpushed(commits) => self.unpushed = commits,
             Update::Notice(message) => {
                 self.set_notice(message.clone());
                 self.message = message;
