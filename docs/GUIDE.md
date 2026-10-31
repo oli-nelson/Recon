@@ -59,14 +59,16 @@ reduced-motion and disabled-animation modes keep the text static. It also shows 
 on branch switches, including switches between branches at the same commit.
 
 The **Unpushed** panel below Files appears only when there are commits ahead of the current branch's
-configured upstream, using local Git refs without fetching. Titles grow upward
+configured upstream, using local Git refs without fetching. Without an upstream,
+it shows commits absent from every locally known remote branch; if no remote
+refs exist, all commits reachable from the current branch qualify. Titles grow upward
 from the bottom, with newer commits last. Its height fits the titles and borders,
 up to `unpushed_visible_commits` titles (default **5**), leaving at least three
 file rows. Set `unpushed_visible_commits = 3` at the top level of `config.toml`,
 or pass `--unpushed-visible-commits 3`, to change the limit (minimum **1**).
 When the list exceeds the limit or available height,
-the newest titles remain visible and the heading shows the full count. Branches
-without an upstream, detached HEADs, and empty repositories hide the panel.
+the newest titles remain visible and the heading shows the full count. Detached
+HEADs and empty repositories hide the panel.
 Press `u` or click the Files header button to toggle it; this preference lasts
 for the session, including across branch changes. The `toggle_unpushed` keybind
 can replace `u`. The panel hides in very short terminals to preserve file rows.

@@ -127,17 +127,17 @@ impl Repo {
             return Ok(unavailable("Detached HEAD"));
         }
         let branch = git2::Branch::wrap(head);
-        let upstream = match branch.upstream() {
-            Ok(upstream) => upstream,
-            Err(error) if error.code() == git2::ErrorCode::NotFound => {
-                return Ok(unavailable("No upstream branch"));
-            }
-            Err(error) => return Err(error.into()),
-        };
         let mut walk = self.git.revwalk()?;
         walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
         walk.push(branch.get().peel_to_commit()?.id())?;
-        walk.hide(upstream.get().peel_to_commit()?.id())?;
+        match branch.upstream() {
+            Ok(upstream) => walk.hide(upstream.get().peel_to_commit()?.id())?,
+            Err(error) if error.code() == git2::ErrorCode::NotFound => {
+                // Match `git log HEAD --not --remotes` when no upstream exists.
+                walk.hide_glob("refs/remotes/*")?;
+            }
+            Err(error) => return Err(error.into()),
+        }
         let mut titles = Vec::new();
         for id in walk {
             if self.cancel.load(Ordering::Relaxed) {

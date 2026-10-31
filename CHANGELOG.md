@@ -6,6 +6,9 @@ a fresh Unreleased section. Released versions are listed newest first.
 
 ## [Unreleased]
 
+- Show unpushed commits on branches without an upstream by comparing against all
+  locally known remote branches.
+
 ## [0.1.2] - 2026-10-30
 
 - Show bulleted unpushed commit titles in an automatically sized panel below Files

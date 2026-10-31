@@ -82,14 +82,53 @@ fn unpushed_commits_follow_upstream_refs_and_survive_clearing_history() {
     assert!(model.unpushed.titles.is_empty());
     git(d.path(), &["branch", "--unset-upstream"]);
     refresh(&mut engine, &mut model);
+    assert_eq!(model.unpushed.unavailable, None);
     assert_eq!(
-        model.unpushed.unavailable.as_deref(),
-        Some("No upstream branch")
+        model.unpushed.titles,
+        ["initial", "Older title", "Newer title"]
     );
     git(d.path(), &["checkout", "--detach", "-q"]);
     refresh(&mut engine, &mut model);
     assert!(model.unpushed.titles.is_empty());
     assert_eq!(model.unpushed.unavailable.as_deref(), Some("Detached HEAD"));
+}
+
+#[test]
+fn unpushed_without_upstream_excludes_all_remote_refs_and_refreshes() {
+    let d = fixture();
+    git(
+        d.path(),
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+    git(
+        d.path(),
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    git(
+        d.path(),
+        &["commit", "--allow-empty", "-qm", "Published elsewhere"],
+    );
+    git(
+        d.path(),
+        &["update-ref", "refs/remotes/other/topic", "HEAD"],
+    );
+    git(d.path(), &["pack-refs", "--all"]);
+    git(d.path(), &["commit", "--allow-empty", "-qm", "Local only"]);
+    let (mut engine, mut model) = setup(&d);
+    reset(&mut engine, &mut model, false);
+    assert_eq!(model.unpushed.unavailable, None);
+    assert_eq!(model.unpushed.titles, ["Local only"]);
+    // Publishing changes the result even when HEAD stays the same.
+    git(
+        d.path(),
+        &["update-ref", "refs/remotes/other/topic", "HEAD"],
+    );
+    refresh(&mut engine, &mut model);
+    assert!(model.unpushed.titles.is_empty());
 }
 
 #[test]
