@@ -6,6 +6,8 @@ a fresh Unreleased section. Released versions are listed newest first.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-31
+
 - Show unpushed commits on branches without an upstream by comparing against all
   locally known remote branches.
 
